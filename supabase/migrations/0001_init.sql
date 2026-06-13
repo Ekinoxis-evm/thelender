@@ -22,6 +22,7 @@ alter table public.profiles enable row level security;
 create or replace function public.set_updated_at()
 returns trigger
 language plpgsql
+set search_path = ''  -- pin search_path (security best practice; now() is in pg_catalog)
 as $$
 begin
   new.updated_at = now();
