@@ -3,6 +3,7 @@ pragma solidity ^0.8.19;
 
 import "./DeployHelpers.s.sol";
 import { DeployYourContract } from "./DeployYourContract.s.sol";
+import { DeployLendSignal } from "./DeployLendSignal.s.sol";
 
 /**
  * @notice Main deployment script for all contracts
@@ -19,9 +20,8 @@ contract DeployScript is ScaffoldETHDeploy {
     DeployYourContract deployYourContract = new DeployYourContract();
     deployYourContract.run();
 
-
-    // Deploy another contract
-    // DeployMyContract myContract = new DeployMyContract();
-    // myContract.run();
+    // LendSignal credit layer: registry (score + ENS + soulbound NFT) + lending vault.
+    DeployLendSignal deployLendSignal = new DeployLendSignal();
+    deployLendSignal.run();
   }
 }
