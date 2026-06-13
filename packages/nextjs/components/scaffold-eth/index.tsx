@@ -1,5 +1,5 @@
 export * from "./BlockieAvatar";
 export * from "./Faucet";
 export * from "./FaucetButton";
+export * from "./NetworkOptions";
 export * from "./PrivyConnectButton";
-export * from "./RainbowKitCustomConnectButton";

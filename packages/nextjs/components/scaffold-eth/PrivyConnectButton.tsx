@@ -17,7 +17,7 @@ import {
   DocumentDuplicateIcon,
 } from "@heroicons/react/24/outline";
 import { BlockieAvatar } from "~~/components/scaffold-eth";
-import { NetworkOptions } from "~~/components/scaffold-eth/RainbowKitCustomConnectButton/NetworkOptions";
+import { NetworkOptions } from "~~/components/scaffold-eth/NetworkOptions";
 import { useCopyToClipboard, useNetworkColor, useOutsideClick } from "~~/hooks/scaffold-eth";
 import { useTargetNetwork } from "~~/hooks/scaffold-eth/useTargetNetwork";
 import { getTargetNetworks } from "~~/utils/scaffold-eth";
