@@ -4397,6 +4397,8 @@ __metadata:
     "@scaffold-ui/components": "npm:^0.1.10"
     "@scaffold-ui/debug-contracts": "npm:^0.1.9"
     "@scaffold-ui/hooks": "npm:^0.1.8"
+    "@supabase/ssr": "npm:^0.10.3"
+    "@supabase/supabase-js": "npm:^2.107.0"
     "@tailwindcss/postcss": "npm:4.2.4"
     "@tanstack/react-query": "npm:~5.59.15"
     "@trivago/prettier-plugin-sort-imports": "npm:~6.0.2"
@@ -5280,6 +5282,84 @@ __metadata:
     "@smithy/types": "npm:^4.3.2"
     aws4: "npm:^1.13.2"
   checksum: 10/27e42a60262b0c8e3fd153b03ca3c68a8c07cc6f7273f07c5c9222671b566a3bf141f3470e334fedf3219953d2b6654963e7807acd755e4aac5d6464a6fa0be9
+  languageName: node
+  linkType: hard
+
+"@supabase/auth-js@npm:2.107.0":
+  version: 2.107.0
+  resolution: "@supabase/auth-js@npm:2.107.0"
+  dependencies:
+    tslib: "npm:2.8.1"
+  checksum: 10/981d60e84c2cbc90f89ec063fae31ce591b1d380271a39b710500be5f9f4b9fbd9b3bc8d0ec4362c5f85a7b6e50156fd6ee538e75ebd2d6778ddcd0e27299b63
+  languageName: node
+  linkType: hard
+
+"@supabase/functions-js@npm:2.107.0":
+  version: 2.107.0
+  resolution: "@supabase/functions-js@npm:2.107.0"
+  dependencies:
+    tslib: "npm:2.8.1"
+  checksum: 10/6b67f923408b9fdb37a90fb4394776fa7fb204c86885c21a8fa15b4199aa551ad30c4a5e349628eb274ecf603d1bed5f2a4fabf44a33af915c8e59df2e6024bd
+  languageName: node
+  linkType: hard
+
+"@supabase/phoenix@npm:^0.4.2":
+  version: 0.4.2
+  resolution: "@supabase/phoenix@npm:0.4.2"
+  checksum: 10/6f9f88ac6a3b1bdd9e6b8dde51dfa9fc08b7de8a10b24025a1fb35d9e68e22528df19fb396613885a9f8dea111a5a1baeb7ffa21ed4ce8b11d1f508935b08f12
+  languageName: node
+  linkType: hard
+
+"@supabase/postgrest-js@npm:2.107.0":
+  version: 2.107.0
+  resolution: "@supabase/postgrest-js@npm:2.107.0"
+  dependencies:
+    tslib: "npm:2.8.1"
+  checksum: 10/1487dc3a02ea69c06f9cf5b4b17c9c68c929194fac1567cd2d504995b3d84ebabf2d7fb5749db6a5d90ea3021161a5632e761ba086da911a91d1bd767fc0a705
+  languageName: node
+  linkType: hard
+
+"@supabase/realtime-js@npm:2.107.0":
+  version: 2.107.0
+  resolution: "@supabase/realtime-js@npm:2.107.0"
+  dependencies:
+    "@supabase/phoenix": "npm:^0.4.2"
+    tslib: "npm:2.8.1"
+  checksum: 10/bb88c51a8640f0e2eb656748e7be98daa1d6f1d9f3fb6bad1bbfcb0c4609d754f390e7fa118dbed5f4641748a39f4216000c6cc9d2083b0afa0a30ec9a5d3c36
+  languageName: node
+  linkType: hard
+
+"@supabase/ssr@npm:^0.10.3":
+  version: 0.10.3
+  resolution: "@supabase/ssr@npm:0.10.3"
+  dependencies:
+    cookie: "npm:^1.0.2"
+  peerDependencies:
+    "@supabase/supabase-js": ^2.105.3
+  checksum: 10/7f5d0ac0f11c97d9ba610b4df10ddeb372109c6a32edcc0b2503cbb2561d0e68d35a1ba7e2cc506fd3dc62679669b0d34bd5df4d36a168146969f484c6eab2a2
+  languageName: node
+  linkType: hard
+
+"@supabase/storage-js@npm:2.107.0":
+  version: 2.107.0
+  resolution: "@supabase/storage-js@npm:2.107.0"
+  dependencies:
+    iceberg-js: "npm:^0.8.1"
+    tslib: "npm:2.8.1"
+  checksum: 10/67b713c33ae81a95c2d6425e2e0efcbebbaead93450fd9f43fe8934285c15035ed85dfcada27f7f3ca3722ba4e5a4944bafb0cd8f45233864eb0b84834348303
+  languageName: node
+  linkType: hard
+
+"@supabase/supabase-js@npm:^2.107.0":
+  version: 2.107.0
+  resolution: "@supabase/supabase-js@npm:2.107.0"
+  dependencies:
+    "@supabase/auth-js": "npm:2.107.0"
+    "@supabase/functions-js": "npm:2.107.0"
+    "@supabase/postgrest-js": "npm:2.107.0"
+    "@supabase/realtime-js": "npm:2.107.0"
+    "@supabase/storage-js": "npm:2.107.0"
+  checksum: 10/f9958f43f02d673a2553ffb41e272e23d68f772158e3f1c00eb44e2f10681b8a3e5d7fa8269a3b4a1928c1fdd56c2a0a358ec567c574dd5bb51ff49fc81bba35
   languageName: node
   linkType: hard
 
@@ -8451,6 +8531,13 @@ __metadata:
   languageName: node
   linkType: hard
 
+"cookie@npm:^1.0.2":
+  version: 1.1.1
+  resolution: "cookie@npm:1.1.1"
+  checksum: 10/85538153054791155cf4d38d2e807e3b9382d71bf71d92fc46fca348515ea574049d0d9ef8eb84d2d54a681ad1d7a7316b1989b901dace50a6c0f4c3858dbdb2
+  languageName: node
+  linkType: hard
+
 "core-util-is@npm:~1.0.0":
   version: 1.0.3
   resolution: "core-util-is@npm:1.0.3"
@@ -10871,6 +10958,13 @@ __metadata:
   bin:
     husky: bin.js
   checksum: 10/c2412753f15695db369634ba70f50f5c0b7e5cb13b673d0826c411ec1bd9ddef08c1dad89ea154f57da2521d2605bd64308af748749b27d08c5f563bcd89975f
+  languageName: node
+  linkType: hard
+
+"iceberg-js@npm:^0.8.1":
+  version: 0.8.1
+  resolution: "iceberg-js@npm:0.8.1"
+  checksum: 10/9be7b4fe966f33341695e3506ae810bf8fb8800a47819570a0c6930b834c15424b9bbd315c191f3bf5c137b623e144e10630ba898059262dc8244abdbeb0a338
   languageName: node
   linkType: hard
 
@@ -16660,7 +16754,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"tslib@npm:^2.0.0, tslib@npm:^2.0.1, tslib@npm:^2.1.0, tslib@npm:^2.3.0, tslib@npm:^2.4.0, tslib@npm:^2.6.0, tslib@npm:^2.6.2, tslib@npm:^2.8.0, tslib@npm:^2.8.1":
+"tslib@npm:2.8.1, tslib@npm:^2.0.0, tslib@npm:^2.0.1, tslib@npm:^2.1.0, tslib@npm:^2.3.0, tslib@npm:^2.4.0, tslib@npm:^2.6.0, tslib@npm:^2.6.2, tslib@npm:^2.8.0, tslib@npm:^2.8.1":
   version: 2.8.1
   resolution: "tslib@npm:2.8.1"
   checksum: 10/3e2e043d5c2316461cb54e5c7fe02c30ef6dccb3384717ca22ae5c6b5bc95232a6241df19c622d9c73b809bea33b187f6dbc73030963e29950c2141bc32a79f7

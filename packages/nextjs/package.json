@@ -23,6 +23,8 @@
     "@scaffold-ui/components": "^0.1.10",
     "@scaffold-ui/debug-contracts": "^0.1.9",
     "@scaffold-ui/hooks": "^0.1.8",
+    "@supabase/ssr": "^0.10.3",
+    "@supabase/supabase-js": "^2.107.0",
     "@tanstack/react-query": "~5.59.15",
     "blo": "~2.0.0",
     "daisyui": "5.5.19",
