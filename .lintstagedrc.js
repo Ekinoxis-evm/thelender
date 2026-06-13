@@ -7,15 +7,8 @@ const buildNextEslintCommand = (filenames) =>
 
 const checkTypesNextCommand = () => "yarn next:check-types";
 
-const buildHardhatEslintCommand = (filenames) =>
-  `yarn hardhat:lint-staged --fix ${filenames
-    .map((f) => path.relative(path.join("packages", "hardhat"), f))
-    .join(" ")}`;
-
+// Foundry only — no packages/hardhat in this repo. Solidity is checked via
+// `forge fmt` / `forge test` in CI and the `/test-ci` command.
 module.exports = {
-  "packages/nextjs/**/*.{ts,tsx}": [
-    buildNextEslintCommand,
-    checkTypesNextCommand,
-  ],
-  "packages/hardhat/**/*.{ts,tsx}": [buildHardhatEslintCommand],
+  "packages/nextjs/**/*.{ts,tsx}": [buildNextEslintCommand, checkTypesNextCommand],
 };

@@ -3,35 +3,23 @@
 This file provides guidance to coding agents working in this repository.
 
 > **thelender note** — this is the upstream **Scaffold-ETH 2** agent guidance, imported for SE-2 mechanics (hot-reload, `useScaffold*` hooks, yarn workflows). For **thelender** specifics, the canonical source is **`CLAUDE.md`** (imported at its top) + **`docs/architecture.md`**. Where they differ, those win. Specifically for this repo:
-> - **Foundry only** — there is no `packages/hardhat`; ignore Hardhat-flavor instructions below.
+> - **Foundry only** — there is no `packages/hardhat`. Solidity lives in `packages/foundry`. (Hardhat sections have been removed from this file.)
 > - **Active subagents live in `.claude/agents/`** (not `.agents/agents/`); skills are symlinked from `.agents/skills/` into `.claude/skills/`.
 > - **User writes use `useSponsoredWrite`**, not `useScaffoldWriteContract` (see CLAUDE.md → Conventions).
 
 ## Project Overview
 
-Scaffold-ETH 2 (SE-2) is a starter kit for building dApps on Ethereum. It comes in **two flavors** based on the Solidity framework:
+Scaffold-ETH 2 (SE-2) is a starter kit for building dApps on Ethereum. **thelender uses the Foundry flavor only** — Solidity lives in `packages/foundry` (Forge). There is **no `packages/hardhat`**; ignore any Hardhat references anywhere.
 
-- **Hardhat flavor**: Uses `packages/hardhat` with hardhat-deploy plugin
-- **Foundry flavor**: Uses `packages/foundry` with Forge scripts
-
-Both flavors share the same frontend package:
+The frontend package:
 
 - **packages/nextjs**: React frontend (Next.js App Router, not Pages Router, **Privy** auth + smart wallets via `@privy-io/wagmi`, Wagmi, Viem, TypeScript, Tailwind CSS with DaisyUI). RainbowKit was removed — Privy is the wallet/auth.
 
-### Detecting Which Flavor You're Using
-
-Check which package exists in the repository:
-
-- If `packages/hardhat` exists → **Hardhat flavor** (follow Hardhat instructions)
-- If `packages/foundry` exists → **Foundry flavor** (follow Foundry instructions)
-
 ## Common Commands
-
-Commands work the same for both flavors unless noted otherwise:
 
 ```bash
 # Development workflow (run each in separate terminal)
-yarn chain          # Start local blockchain (Hardhat or Anvil)
+yarn chain          # Start local Anvil chain
 yarn deploy         # Deploy contracts to local network
 yarn start          # Start Next.js frontend at http://localhost:3000
 
@@ -61,41 +49,13 @@ yarn vercel:yolo --prod # for deployment of frontend
 
 ### Smart Contract Development
 
-#### Hardhat Flavor
-
-- Contracts: `packages/hardhat/contracts/`
-- Deployment scripts: `packages/hardhat/deploy/` (uses hardhat-deploy plugin)
-- Tests: `packages/hardhat/test/`
-- Config: `packages/hardhat/hardhat.config.ts`
-- Deploying specific contract:
-  - If the deploy script has:
-    ```typescript
-    // In packages/hardhat/deploy/01_deploy_my_contract.ts
-    deployMyContract.tags = ["MyContract"];
-    ```
-  - `yarn deploy --tags MyContract`
-  - **Gas limit in deploy scripts**: Manual post-deploy calls (e.g. `transferOwnership`, `grantRole`, `initialize`) can silently inherit `blockGasLimit` as their gas cap, causing failures. **Fix at the call site, not in `hardhat.config.ts`:**
-    ```typescript
-    // Preferred: estimateGas + 20% margin
-    const gas = await myContract.myMethod.estimateGas(arg1, arg2);
-    await myContract.myMethod(arg1, arg2, { gasLimit: (gas * 120n) / 100n });
-
-    // Or: explicit limit for simple admin calls
-    await myContract.transferOwnership(newOwner, { gasLimit: 100_000 });
-    ```
-
-#### Foundry Flavor
+Foundry (`packages/foundry`):
 
 - Contracts: `packages/foundry/contracts/`
-- Deployment scripts: `packages/foundry/script/` (uses custom deployment strategy)
-  - Example: `packages/foundry/script/Deploy.s.sol` and `packages/foundry/script/DeployYourContract.s.sol`
-- Tests: `packages/foundry/test/`
+- Deployment scripts: `packages/foundry/script/` — e.g. `Deploy.s.sol`, `DeployYourContract.s.sol`
+- Tests: `packages/foundry/test/` — run `yarn foundry:test` (`yarn test` is an alias for the same)
 - Config: `packages/foundry/foundry.toml`
-- Deploying a specific contract:
-  - Create a separate deployment script and run `yarn deploy --file DeployYourContract.s.sol`
-
-#### Both Flavors
-
+- Deploy a specific contract: create a deployment script and run `yarn deploy --file DeployYourContract.s.sol`
 - After `yarn deploy`, ABIs are auto-generated to `packages/nextjs/contracts/deployedContracts.ts`
 
 ### Frontend Contract Interaction
@@ -179,10 +139,6 @@ Use `notification` from `~~/utils/scaffold-eth` for success/error/warning feedba
 
 ### Configure Target Network before deploying to testnet / mainnet.
 
-#### Hardhat
-
-Add networks in `packages/hardhat/hardhat.config.ts` if not present.
-
 #### Foundry
 
 Add RPC endpoints in `packages/foundry/foundry.toml` if not present.
@@ -200,7 +156,7 @@ Add networks in `packages/nextjs/scaffold.config.ts` if not present. This file a
 | `UpperCamelCase` | class / interface / type / enum / decorator / type parameters / component functions in TSX / JSXElement type parameter |
 | `lowerCamelCase` | variable / parameter / function / property / module alias                                                              |
 | `CONSTANT_CASE`  | constant / enum / global variables                                                                                     |
-| `snake_case`     | for hardhat deploy files and foundry script files                                                                      |
+| `snake_case`     | for foundry script files                                                                                               |
 
 ### Import Paths
 
