@@ -1,86 +1,52 @@
-# Welcome to Scaffold-ETH 2 Contributing Guide
+# Contributing to thelender
 
-Thank you for investing your time in contributing to Scaffold-ETH 2!
+Welcome. thelender is a sponsored, gasless onchain lending app on Ethereum (Sepolia), built on Scaffold-ETH 2 with an AI provider lab for Claude Code. This guide is how the team works — read it once before your first PR.
 
-This guide aims to provide an overview of the contribution workflow to help us make the contribution process effective for everyone involved.
+> First time? Get running with the [README](README.md), then skim [`docs/architecture.md`](docs/architecture.md) and the rules in [`CLAUDE.md`](CLAUDE.md).
 
-## About the Project
+## 1 · Setup
+```bash
+git clone https://github.com/Ekinoxis-evm/thelender && cd thelender
+git submodule update --init --recursive   # Foundry libs
+yarn install
+cp packages/nextjs/.env.example packages/nextjs/.env.local   # fill keys (ask a maintainer)
+cp packages/foundry/.env.example packages/foundry/.env
+```
+Run: `yarn deploy --network sepolia` → `yarn start`. Full detail in the README.
 
-Scaffold-ETH 2 is a minimal and forkable repo providing builders with a starter kit to build decentralized applications on Ethereum.
+## 2 · Branches & commits
+- **Branch off `main`**: `feat/<short-desc>`, `fix/<short-desc>`, `chore/…`, `docs/…`, `refactor/…`. Never commit to `main` directly.
+- **Commit messages** use a type prefix (matches our history): `feat:`, `fix:`, `docs:`, `chore:`, `refactor:`, `test:`, `db:` (Supabase/migrations). Imperative, concise. One logical change per commit.
+- Keep PRs focused and small where possible.
 
-Read the [README](README.md) to get an overview of the project.
+## 3 · The workflow (use the AI lab)
+This repo is wired for Claude Code. Lean on it:
+| Task | Use |
+|------|-----|
+| New contract | `solidity-engineer` agent (invokes `ethskills:ship` first) |
+| Frontend / wallet UX | `web3-frontend` agent + `/setup-privy`, `/integrate-ens` |
+| DB / Supabase / indexer | `integrations-engineer` agent + `supabase` skill+MCP |
+| Verify a contract | `/verify-contract` |
+| Inspect a tx/address | `blockscout` MCP |
+| Review before merge | `onchain-security-reviewer` / `grumpy-carlos-code-reviewer` |
 
-### Vision
+Ground library questions with `use context7`. Full inventory: [`docs/tooling-lab.md`](docs/tooling-lab.md).
 
-The goal of Scaffold-ETH 2 is to provide the primary building blocks for a decentralized application.
+## 4 · Before you push / open a PR
+1. **`/test-ci`** — runs Foundry tests + Next lint/typecheck/build locally (husky also gates commits).
+2. For any **onchain change**: **`/ship-check`** (verifies state, decimals, addresses, secrets, tests) and a pass from `onchain-security-reviewer`.
+3. Open a PR against `main`, fill the PR template. **CI must be green.**
+4. Changes to `packages/foundry/**` or `supabase/migrations/**` require review from a [CODEOWNER](.github/CODEOWNERS).
 
-The repo can be forked to include integrations and more features, but we want to keep the master branch simple and minimal.
+## 5 · Code rules (non-negotiable — see [`CLAUDE.md`](CLAUDE.md))
+- **Sponsored writes**: user writes go through `useSponsoredWrite()`, **never** `useScaffoldWriteContract` (that's the un-sponsored EOA path). Reads pass `{ account: useSmartWalletAddress() }`.
+- **Supabase**: RLS ON for every table; privileged writes server-side with the service-role key; never expose `service_role` / `PRIVY_APP_SECRET` to the client.
+- **Onchain**: "onchain" is one word · 0–2 contracts for an MVP · verify addresses/decimals/gas live · Chainlink feeds not spot prices · contract addresses from generated artifacts.
+- **Never commit secrets.** `.env.local` / `packages/*/.env` are gitignored — keep it that way.
 
-### Project Status
+## 6 · Remotes
+- `origin` → `Ekinoxis-evm/thelender` (this app — push here).
+- `template` → `Ekinoxis-evm/ai_scafolding_web3_app` (the upstream AI-Native template). To pull template improvements: `git fetch template && git merge template/main` (review carefully).
 
-The project is under active development.
-
-You can view the open Issues, follow the development process and contribute to the project.
-
-## Getting started
-
-You can contribute to this repo in many ways:
-
-- Solve open issues
-- Report bugs or feature requests
-- Improve the documentation
-
-Contributions are made via Issues and Pull Requests (PRs). A few general guidelines for contributions:
-
-- Search for existing Issues and PRs before creating your own.
-- Contributions should only fix/add the functionality in the issue OR address style issues, not both.
-- If you're running into an error, please give context. Explain what you're trying to do and how to reproduce the error.
-- Please use the same formatting in the code repository. You can configure your IDE to do it by using the prettier / linting config files included in each package.
-- If applicable, please edit the README.md file to reflect the changes.
-
-### Issues
-
-Issues should be used to report problems, request a new feature, or discuss potential changes before a PR is created.
-
-#### Solve an issue
-
-Scan through our [existing issues](https://github.com/scaffold-eth/scaffold-eth-2/issues) to find one that interests you.
-
-If a contributor is working on the issue, they will be assigned to the individual. If you find an issue to work on, you are welcome to assign it to yourself and open a PR with a fix for it.
-
-#### Create a new issue
-
-If a related issue doesn't exist, you can open a new issue.
-
-Some tips to follow when you are creating an issue:
-
-- Provide as much context as possible. Over-communicate to give the most details to the reader.
-- Include the steps to reproduce the issue or the reason for adding the feature.
-- Screenshots, videos etc., are highly appreciated.
-
-### Pull Requests
-
-#### Pull Request Process
-
-We follow the ["fork-and-pull" Git workflow](https://github.com/susam/gitpr)
-
-1. Fork the repo
-2. Clone the project
-3. Create a new branch with a descriptive name
-4. Commit your changes to the new branch
-5. Push changes to your fork
-6. Open a PR in our repository and tag one of the maintainers to review your PR
-
-Here are some tips for a high-quality pull request:
-
-- Create a title for the PR that accurately defines the work done.
-- Structure the description neatly to make it easy to consume by the readers. For example, you can include bullet points and screenshots instead of having one large paragraph.
-- Add the link to the issue if applicable.
-- Have a good commit message that summarises the work done.
-
-Once you submit your PR:
-
-- We may ask questions, request additional information or ask for changes to be made before a PR can be merged. Please note that these are to make the PR clear for everyone involved and aims to create a frictionless interaction process.
-- As you update your PR and apply changes, mark each conversation resolved.
-
-Once the PR is approved, we'll "squash-and-merge" to keep the git commit history clean.
+## 7 · Questions
+Open an issue (templates provided) or ask a maintainer. Keep `CLAUDE.md` and the `docs/` current when you change how things work — docs drift is a bug.

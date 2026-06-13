@@ -1,8 +1,10 @@
-# AI-Native Web3 App Template
+# thelender
 
-A reusable **Scaffold-ETH 2** dApp (Next.js + Foundry monorepo) supercharged with an **AI provider lab**: a curated set of MCP servers, subagents, slash commands, and skills that let you build, verify, index, and ship onchain apps with Claude Code — fast and safely. Wallet/auth is **Privy** with embedded + **gas-sponsored smart wallets**. Working chain: **Ethereum Sepolia**.
+**Sponsored, gasless onchain lending** on Ethereum. A **Scaffold-ETH 2** dApp (Next.js + Foundry monorepo) with an **AI provider lab** (MCP servers, subagents, slash commands, skills for Claude Code). Wallet/auth is **Privy** with embedded + **gas-sponsored smart wallets** (users pay no gas); working chain **Ethereum Sepolia**; off-chain data in **Supabase**; deployed on **Vercel**.
 
-> **TL;DR** — `yarn install` → set your Privy App ID → `yarn deploy --network sepolia` → `yarn start`. Then build with the agents and `/commands` below. Authorize MCPs with `/mcp`.
+> Built on the [AI-Native Web3 App template](https://github.com/Ekinoxis-evm/ai_scafolding_web3_app). New here? Read this, then [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/architecture.md`](docs/architecture.md).
+
+> **TL;DR** — `yarn install && git submodule update --init --recursive` → set your Privy App ID + Supabase keys → `yarn deploy --network sepolia` (needs a funded deployer) → `yarn start`. Authorize MCPs with `/mcp`.
 
 ```
                        ┌─────────────────────────────────────────────┐

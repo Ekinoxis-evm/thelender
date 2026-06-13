@@ -2,6 +2,11 @@
 
 This file provides guidance to coding agents working in this repository.
 
+> **thelender note** — this is the upstream **Scaffold-ETH 2** agent guidance, imported for SE-2 mechanics (hot-reload, `useScaffold*` hooks, yarn workflows). For **thelender** specifics, the canonical source is **`CLAUDE.md`** (imported at its top) + **`docs/architecture.md`**. Where they differ, those win. Specifically for this repo:
+> - **Foundry only** — there is no `packages/hardhat`; ignore Hardhat-flavor instructions below.
+> - **Active subagents live in `.claude/agents/`** (not `.agents/agents/`); skills are symlinked from `.agents/skills/` into `.claude/skills/`.
+> - **User writes use `useSponsoredWrite`**, not `useScaffoldWriteContract` (see CLAUDE.md → Conventions).
+
 ## Project Overview
 
 Scaffold-ETH 2 (SE-2) is a starter kit for building dApps on Ethereum. It comes in **two flavors** based on the Solidity framework:

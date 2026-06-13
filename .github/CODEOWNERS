@@ -1,0 +1,20 @@
+# Code owners for thelender — auto-requested as reviewers on matching paths.
+# Add teammates / a @Ekinoxis-evm/<team> as the project grows.
+
+# Default owner for everything
+*                         @wmb81321
+
+# Onchain code + deploy scripts — require review
+/packages/foundry/        @wmb81321
+
+# Database schema changes — require review
+/supabase/migrations/     @wmb81321
+
+# Critical wallet/auth + provider wiring
+/packages/nextjs/services/web3/   @wmb81321
+/packages/nextjs/hooks/scaffold-eth/useSmartWallet.ts   @wmb81321
+
+# Project rules & AI workspace
+/CLAUDE.md                @wmb81321
+/.claude/                 @wmb81321
+/.mcp.json                @wmb81321

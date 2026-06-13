@@ -14,8 +14,11 @@ You build the React/Next.js (App Router) frontend for a Web3 app. Polished, type
 ## Rules
 - Server Components by default; `"use client"` only where wallet/state hooks are needed.
 - Only `NEXT_PUBLIC_*` env in client code. Never import a secret into a client component.
-- This is a **Scaffold-ETH 2** app in `packages/nextjs`. Use SE-2's typed hooks (`useScaffoldReadContract` / `useScaffoldWriteContract`) over raw wagmi. Contract addresses + ABIs come from the auto-generated `packages/nextjs/contracts/deployedContracts.ts` — never hand-copy them.
-- Wallet/auth is **Privy** (default): `PrivyProvider` + `@privy-io/wagmi` + smart wallets in `services/web3/`; login UI is `components/scaffold-eth/PrivyConnectButton.tsx`. Working chain: **Sepolia**.
+- This is a **Scaffold-ETH 2** app in `packages/nextjs`. Contract addresses + ABIs come from the auto-generated `packages/nextjs/contracts/deployedContracts.ts` — never hand-copy them.
+- **CRITICAL sponsored-wallet rule** (thelender's core pattern):
+  - WRITES → `useSponsoredWrite()` from `hooks/scaffold-eth/useSmartWallet.ts` (`writeContractSponsored(...)` single, `sendCalls([...])` atomic batch). Goes through the Privy smart wallet → **gas-sponsored**. **Never use `useScaffoldWriteContract` for user writes** — it signs from the embedded EOA and the user pays gas.
+  - READS → `useScaffoldReadContract({ ..., account: useSmartWalletAddress() })` so state reflects the smart wallet, not the EOA. Plain `useScaffoldReadContract` is fine for non-account-specific reads.
+- Wallet/auth is **Privy** (default): `PrivyProvider` → `SmartWalletsProvider` → `@privy-io/wagmi` in `services/web3/`; login UI is `components/scaffold-eth/PrivyConnectButton.tsx`. Working chain: **Sepolia**. See `docs/privy.md`.
 - Every write tx: pending / success / error states, and surface the explorer link. Assume reverts happen.
 - Show ENS name + avatar instead of raw `0x…` addresses wherever an address is displayed; fall back to a truncated address.
 - Handle wrong-network: prompt to switch to the app's default chain.
