@@ -1,10 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { useAccount } from "wagmi";
+import { Address } from "@scaffold-ui/components";
 import { CheckCircleIcon } from "@heroicons/react/24/solid";
 import { FlowShell, PageHeader, Panel } from "~~/components/kredito";
 import { DEMO_BORROWERS, DEMO_PROFILE } from "~~/kredito/mock";
+import { useKreditoWallet } from "~~/kredito/useWallet";
 
 const DOCS = [
   "Business registration",
@@ -39,7 +40,7 @@ const Field = ({
 );
 
 export default function OnboardingPage() {
-  const { isConnected } = useAccount();
+  const { address, isSmartWallet } = useKreditoWallet();
   const [profile, setProfile] = useState(DEMO_PROFILE);
   const [archetype, setArchetype] = useState<string>("strong");
 
@@ -116,10 +117,20 @@ export default function OnboardingPage() {
           </Panel>
 
           <Panel eyebrow="Wallet" title="Credit identity">
-            <div className="flex items-center gap-2 text-sm">
-              <span className={`inline-block h-2 w-2 rounded-full ${isConnected ? "bg-success" : "bg-base-300"}`} />
-              {isConnected ? "Wallet connected" : "Connect a wallet (top right)"}
-            </div>
+            {address ? (
+              <div className="space-y-2.5">
+                <div className="flex items-center gap-2 text-sm">
+                  <span className="inline-block h-2 w-2 rounded-full bg-success" />
+                  {isSmartWallet ? "Smart wallet connected" : "Wallet connected"}
+                </div>
+                <Address address={address} />
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 text-sm">
+                <span className="inline-block h-2 w-2 rounded-full bg-base-300" />
+                Connect a wallet (top right) to set your credit identity
+              </div>
+            )}
             <p className="mt-2 text-xs text-base-content/55">
               This wallet will hold the soulbound Credit Certificate and be the subject of the ENS gate.
             </p>
