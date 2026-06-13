@@ -2,7 +2,8 @@
 node_modules/
 .pnp
 .pnp.js
-.yarn/
+# NOTE: do NOT ignore all of .yarn/ — the yarn 4 release (.yarn/releases) must be
+# committed for CI/Vercel. See the yarn 4 (Berry) section below for the precise rules.
 
 # Builds
 .next/
