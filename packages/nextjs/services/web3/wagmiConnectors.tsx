@@ -17,6 +17,11 @@ const hasOnlyLocalTargetNetworks = targetNetworks.every(network => network.id ==
 const showBurnerWallet =
   burnerWalletMode !== "disabled" && (burnerWalletMode === "allNetworks" || hasOnlyLocalTargetNetworks);
 
+// NOTE: This file is RainbowKit wiring that is no longer used as the default
+// connector set (Privy now injects wagmi connectors). It is kept in place to
+// avoid breaking other imports. `burner-connector` bundles a nested copy of
+// `@rainbow-me/rainbowkit`, whose `Wallet` type is nominally distinct from the
+// top-level one; we cast through `Wallet` to reconcile the duplicate packages.
 const wallets = [
   metaMaskWallet,
   walletConnectWallet,
@@ -24,7 +29,9 @@ const wallets = [
   baseAccount,
   rainbowWallet,
   safeWallet,
-  ...(showBurnerWallet ? [rainbowkitBurnerWallet] : []),
+  // `burner-connector`'s nested rainbowkit produces a nominally-distinct wallet
+  // type; cast it to reconcile the duplicate package versions.
+  ...(showBurnerWallet ? [rainbowkitBurnerWallet as unknown as typeof metaMaskWallet] : []),
 ];
 
 /**
