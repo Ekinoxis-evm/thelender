@@ -1,0 +1,59 @@
+{
+  "mcpServers": {
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "privy-docs": {
+      "url": "https://docs.privy.io/mcp"
+    },
+    "supabase": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@supabase/mcp-server-supabase@latest",
+        "--read-only",
+        "--project-ref=${SUPABASE_PROJECT_REF}"
+      ],
+      "env": {
+        "SUPABASE_ACCESS_TOKEN": "${SUPABASE_ACCESS_TOKEN}"
+      }
+    },
+    "railway": {
+      "command": "npx",
+      "args": ["-y", "@railway/mcp-server"],
+      "env": {
+        "RAILWAY_API_TOKEN": "${RAILWAY_API_TOKEN}"
+      }
+    },
+    "vercel": {
+      "type": "http",
+      "url": "https://mcp.vercel.com"
+    },
+    "github": {
+      "type": "http",
+      "url": "https://api.githubcopilot.com/mcp/"
+    },
+    "blockscout": {
+      "type": "http",
+      "url": "https://mcp.blockscout.com/mcp",
+      "headers": {
+        "Blockscout-MCP-Pro-Api-Key": "${BLOCKSCOUT_PRO_API_KEY}"
+      }
+    },
+    "graph-subgraph": {
+      "type": "sse",
+      "url": "https://subgraphs.mcp.thegraph.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${GRAPH_GATEWAY_API_KEY}"
+      }
+    },
+    "graph-token-api": {
+      "type": "sse",
+      "url": "https://token-api.mcp.thegraph.com/sse",
+      "headers": {
+        "Authorization": "Bearer ${GRAPH_TOKEN_API_JWT}"
+      }
+    }
+  }
+}

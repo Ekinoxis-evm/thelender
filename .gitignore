@@ -1,0 +1,64 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.yarn/
+
+# Builds
+.next/
+out/
+build/
+dist/
+
+# Foundry (Scaffold-ETH 2 monorepo)
+packages/foundry/out/
+packages/foundry/cache/
+packages/foundry/broadcast/**/dry-run/
+# packages/foundry/lib/* are git submodules (see .gitmodules) — fetched via
+# `git submodule update --init --recursive`. Tracked as gitlinks, not files.
+
+# Env & secrets — NEVER commit these (AI agents are the #1 credential leak vector)
+.env
+.env*.local
+.env.local
+.env.development
+.env.production
+*.key
+*.pem
+deployer.key
+mnemonic.txt
+
+# Vercel / Railway
+.vercel/
+.railway/
+
+# Supabase
+supabase/.branches/
+supabase/.temp/
+
+# Logs & OS
+*.log
+npm-debug.log*
+.DS_Store
+
+# Claude local (machine-specific settings stay out of git)
+.claude/settings.local.json
+
+# Misc
+.qodo/
+coverage/
+.turbo/
+
+# ── yarn 4 (Berry) — from Scaffold-ETH 2 ──
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/sdks
+!.yarn/versions
+.eslintcache
+.pnp.*
+
+# ── Scaffold-ETH per-package env ──
+packages/*/.env
+packages/*/.env.local

@@ -1,0 +1,95 @@
+# ethglobanyc — Web3 App Workspace
+
+@AGENTS.md
+
+Hackathon-grade Web3 application. This file is the shared project memory for Claude Code. Keep it current.
+**Base framework: Scaffold-ETH 2** (yarn-4 monorepo). SE-2's own agent guidance lives in `AGENTS.md` (imported above) — read it for the contract↔frontend hot-reload model, `scaffold.config.ts`, the typed `useScaffold*` hooks, and `yarn` workflows. This file adds our provider lab (Privy, Chainlink, ENS, Supabase, Graph, Blockscout) and onchain rules on top.
+
+## Stack
+
+| Layer | Choice | Notes |
+|-------|--------|-------|
+| Base scaffold | **Scaffold-ETH 2** | Yarn-4 monorepo: `packages/nextjs` + `packages/foundry`. Hot-reload contracts→frontend, burner wallet, local chain, faucet. |
+| App | Next.js (App Router) + TS | `packages/nextjs`. Deploy on Vercel. |
+| Auth + wallets | **Privy** (swapping in) | Target: `@privy-io/react-auth` embedded/social wallets. SE-2 ships **RainbowKit** by default in `packages/nextjs/services/web3/wagmiConnectors.tsx` — the Privy swap is a pending task (use `/setup-privy`). |
+| Chain I/O | **viem** + **wagmi** | SE-2's typed `useScaffoldReadContract` / `useScaffoldWriteContract` hooks wrap wagmi — prefer them. |
+| ENS | viem ENS actions | Resolution always reads **Ethereum Mainnet**, even if the app runs on an L2. |
+| Oracles / onchain data | **Chainlink** | Data Feeds, VRF, CCIP, Data Streams, Functions. |
+| Database / backend | **Supabase** | Postgres + Auth + Realtime + Edge Functions. RLS on by default. |
+| Long-running services | **Railway** | Indexers, workers, cron — anything that can't be a serverless function. |
+| Contracts | **Foundry** | `forge`/`cast`/`anvil` (v1.7.1). In `packages/foundry/` (`contracts/`, `script/`, `test/`). Etherscan V2 verify pre-configured. |
+| Indexing | **The Graph** | Token API for balances/prices; subgraphs for custom events. Via MCP. SE-2 `subgraph`/`ponder` skills available. |
+| Explorer | **Blockscout** | Multichain reads/debugging via MCP. Verify contracts on Etherscan (V2, one key). |
+
+Default app chain: **Base (8453)**. SE-2 targets the local `foundry` chain by default — set live networks in `packages/nextjs/scaffold.config.ts` (`targetNetworks`).
+
+## Run loop (Scaffold-ETH 2)
+Three terminals: `yarn chain` (local anvil) · `yarn deploy` (deploy contracts) · `yarn start` (frontend at :3000). Edit a contract → redeploy → frontend auto-adapts to the new ABI. `yarn test` runs Foundry tests.
+
+## Onchain rules (from ethskills — non-negotiable)
+
+- Say **"onchain"** (one word).
+- **0–2 contracts** for an MVP, 3 is the ceiling. Contracts are for ownership/transfers/commitments — not a database or backend. Push everything else to Supabase.
+- **Verify state before coding.** Check live gas (`cast base-fee`), real protocol addresses (`cast code <addr>`), and token decimals. Stale training data causes fund-loss bugs.
+- **Decimals kill apps.** USDC = 6 decimals, not 18. Always verify on the target chain.
+- **Never hardcode addresses.** Resolve from a config keyed by chainId. Wrong address = permanent loss.
+- **Never use spot DEX prices as an oracle** — flash-loanable in one tx. Use Chainlink feeds.
+- **Never commit secrets.** AI agents are the #1 credential leak vector. Secrets live in `.env.local` (gitignored) and Vercel/Railway env, never in code or chat.
+- **Design for incentives, not timers.** Contracts can't self-execute; every function needs a caller who pays gas. Plan who calls what and what happens if nobody does.
+- Before writing Solidity or shipping anything onchain, invoke the **`ethskills:ship`** skill (and `ethskills:security` before deploy).
+
+## Skills available
+
+- **Privy**: `.claude/skills/privy` — auth/wallet/policy implementation sequences. Live docs via `privy-docs` MCP.
+- **Chainlink** (`.claude/skills/chainlink-*` → `.agents/skills/`): `data-feeds`, `data-streams`, `vrf`, `ccip`, `cre`, `ace`, `confidential-ai-attester`.
+- **Scaffold-ETH 2** (`.agents/skills/` → symlinked into `.claude/skills/`): `openzeppelin`, `erc-721`, `siwe`, `eip-5792` (batch tx), `x402` (machine payments), `subgraph`, `ponder` (indexer), `drizzle-neon` (db).
+- **ethskills** (plugin): `ship`, `security`, `gas`, `l2s`, `standards`, `tools`, `addresses`, `wallets`, `testing`, `audit`, `frontend-ux`, etc.
+- **Uniswap / viem** plugins: `viem-integration`, `swap-integration`, `v4-*` for AMM/hook work.
+- **Supabase / Vercel** plugins: DB, deploy, env management.
+
+## MCP servers (`.mcp.json`)
+
+- **context7** — live library docs. Append "use context7" to prompts for ENS/any lib (e.g. "Add ENS resolution. Use context7 for ensdomains/docs").
+- **privy-docs** — live Privy docs search (hosted, no auth).
+- **supabase** — read-only project access (needs `SUPABASE_ACCESS_TOKEN` + `SUPABASE_PROJECT_REF`).
+- **railway** — deploy/manage services (needs `RAILWAY_API_TOKEN`).
+- **vercel** — official, remote, OAuth. Projects/deployments/logs/docs. Authorize via `/mcp`.
+- **github** — official GitHub MCP (`api.githubcopilot.com/mcp/`), remote, OAuth. Repos/PRs/issues/actions. Authorize via `/mcp`.
+- **blockscout** — explorer reads (tx/address/contract/token), multichain. Needs `BLOCKSCOUT_PRO_API_KEY`.
+- **graph-subgraph** / **graph-token-api** — The Graph indexing. Subgraph queries + token balances/holders/prices. Need `GRAPH_GATEWAY_API_KEY` / `GRAPH_TOKEN_API_JWT`. See `docs/indexing-explorers.md`.
+
+After editing `.mcp.json`, restart Claude Code and run `/mcp` to authorize the OAuth servers (vercel, github) and check connection status. Full tooling map: `docs/tooling-lab.md`.
+
+## Conventions
+
+- TypeScript strict. No `any` in shared code.
+- Frontend lives in `packages/nextjs`; contracts in `packages/foundry`. Use SE-2's typed `useScaffold*` hooks over raw wagmi where they fit.
+- Contract addresses/ABIs are auto-generated by SE-2 into `packages/nextjs/contracts/deployedContracts.ts` on deploy — never hand-copy them.
+- Server-only secrets never imported into client components. Public env = `NEXT_PUBLIC_*` only.
+- Run `/ship-check` before any onchain deploy.
+
+## Layout (monorepo)
+
+```
+packages/
+  nextjs/       # Next.js app: app/ components/ hooks/ services/web3/ scaffold.config.ts
+  foundry/      # Foundry: contracts/ script/ test/ lib/(submodules) foundry.toml
+docs/           # Provider integration notes
+.claude/        # agents, commands, skills (chainlink + SE-2 + privy), settings
+.mcp.json       # MCP servers
+AGENTS.md       # SE-2 agent guidance (imported into this file)
+```
+
+## CI & quality gates
+
+- `.github/workflows/ci.yml` — yarn monorepo: Foundry tests + Next.js lint/typecheck/build + gitleaks. (SE-2 also ships `.github/workflows/lint.yaml`.)
+- `/test-ci` runs the same locally before a push. `/ship-check` gates onchain deploys.
+
+## Env & RPC
+
+Per-package env (SE-2): `packages/nextjs/.env.local` (frontend, `NEXT_PUBLIC_*`) and `packages/foundry/.env` (deploy keys, RPC, Etherscan). Root `.env.example` documents every key as the master reference.
+RPC via **Alchemy** (one key, all chains) — `ALCHEMY_API_KEY`. ENS resolution always uses the **mainnet** RPC. See `docs/rpc.md`.
+
+## Onboarding
+
+New here / reusing as a template → start with **`README.md`** (full setup + tooling walkthrough).
