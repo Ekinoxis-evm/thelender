@@ -21,7 +21,7 @@ Hackathon-grade Web3 application. This file is the shared project memory for Cla
 | Indexing | **The Graph** | Token API for balances/prices; subgraphs for custom events. Via MCP. SE-2 `subgraph`/`ponder` skills available. |
 | Explorer | **Blockscout** | Multichain reads/debugging via MCP. Verify contracts on Etherscan (V2, one key). |
 
-Default app chain: **Base (8453)**. SE-2 targets the local `foundry` chain by default — set live networks in `packages/nextjs/scaffold.config.ts` (`targetNetworks`).
+Working chain: **Ethereum Sepolia (11155111)** — set in `packages/nextjs/scaffold.config.ts` (`targetNetworks: [chains.sepolia]`). Everything (Privy smart-wallet sponsorship, Foundry deploy/verify, RPC) aligns to Sepolia. Mainnet is auto-added for ENS resolution only.
 
 ## Run loop (Scaffold-ETH 2)
 Three terminals: `yarn chain` (local anvil) · `yarn deploy` (deploy contracts) · `yarn start` (frontend at :3000). Edit a contract → redeploy → frontend auto-adapts to the new ABI. `yarn test` runs Foundry tests.
