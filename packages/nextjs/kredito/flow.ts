@@ -1,4 +1,4 @@
-// The LendSignal product flow. Drives the header nav, the landing stepper and
+// The Kredito product flow. Drives the header nav, the landing stepper and
 // per-page "next step" links so the whole app shares one source of truth.
 
 export type FlowStep = {

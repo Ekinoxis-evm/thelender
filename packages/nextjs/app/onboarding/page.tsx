@@ -3,8 +3,8 @@
 import { useState } from "react";
 import { useAccount } from "wagmi";
 import { CheckCircleIcon } from "@heroicons/react/24/solid";
-import { FlowShell, PageHeader, Panel } from "~~/components/lendsignal";
-import { DEMO_BORROWERS, DEMO_PROFILE } from "~~/lendsignal/mock";
+import { FlowShell, PageHeader, Panel } from "~~/components/kredito";
+import { DEMO_BORROWERS, DEMO_PROFILE } from "~~/kredito/mock";
 
 const DOCS = [
   "Business registration",
@@ -26,14 +26,14 @@ const Field = ({
   suffix?: string;
 }) => (
   <label className="block">
-    <span className="ls-eyebrow">{label}</span>
+    <span className="k-eyebrow">{label}</span>
     <div className="mt-1 flex items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3 focus-within:border-primary transition-colors">
       <input
         value={value}
         onChange={e => onChange(e.target.value)}
         className="w-full bg-transparent py-2.5 outline-none text-sm"
       />
-      {suffix && <span className="ls-mono text-xs text-base-content/45">{suffix}</span>}
+      {suffix && <span className="k-mono text-xs text-base-content/45">{suffix}</span>}
     </div>
   </label>
 );
@@ -81,7 +81,7 @@ export default function OnboardingPage() {
                 <li key={d} className="flex items-center gap-2 text-sm">
                   <CheckCircleIcon className="h-5 w-5 text-success shrink-0" />
                   <span>{d}</span>
-                  <span className="ls-mono text-[11px] text-base-content/40 ml-auto">processed</span>
+                  <span className="k-mono text-[11px] text-base-content/40 ml-auto">processed</span>
                 </li>
               ))}
             </ul>
@@ -105,7 +105,7 @@ export default function OnboardingPage() {
                 >
                   <div className="flex items-center justify-between">
                     <span className="font-medium text-sm">{b.label}</span>
-                    <span className="ls-mono text-xs text-base-content/50">
+                    <span className="k-mono text-xs text-base-content/50">
                       {b.ai}/{b.bureau}
                     </span>
                   </div>

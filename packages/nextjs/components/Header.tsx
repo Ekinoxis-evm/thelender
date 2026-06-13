@@ -1,13 +1,14 @@
 "use client";
 
 import React, { useRef } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { hardhat } from "viem/chains";
 import { Bars3Icon } from "@heroicons/react/24/outline";
 import { FaucetButton, PrivyConnectButton } from "~~/components/scaffold-eth";
 import { useOutsideClick, useTargetNetwork } from "~~/hooks/scaffold-eth";
-import { FLOW } from "~~/lendsignal/flow";
+import { FLOW } from "~~/kredito/flow";
 
 type HeaderMenuLink = {
   label: string;
@@ -45,14 +46,26 @@ export const HeaderMenuLinks = () => {
 };
 
 const BrandMark = () => (
-  <Link href="/" passHref className="flex items-center gap-2.5 ml-3 mr-5 shrink-0">
-    <span className="grid place-items-center h-9 w-9 rounded-xl bg-secondary text-secondary-content ls-mono font-bold">
-      LS
-    </span>
-    <span className="hidden sm:flex flex-col leading-tight">
-      <span className="font-semibold ls-display">LendSignal</span>
-      <span className="text-[11px] text-base-content/55">onchain credit · thelender</span>
-    </span>
+  <Link href="/" passHref className="flex items-center ml-3 mr-5 shrink-0" aria-label="Kredito">
+    {/* dark-on-light lockup for the light theme, white lockup for the dark theme */}
+    <Image
+      src="/kredito-lockup.svg"
+      alt="Kredito"
+      width={144}
+      height={44}
+      priority
+      unoptimized
+      className="h-11 w-auto block dark:hidden"
+    />
+    <Image
+      src="/kredito-lockup-white.svg"
+      alt="Kredito"
+      width={144}
+      height={44}
+      priority
+      unoptimized
+      className="h-11 w-auto hidden dark:block"
+    />
   </Link>
 );
 

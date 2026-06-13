@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { CheckCircleIcon, XCircleIcon } from "@heroicons/react/24/solid";
-import { FlowShell, PageHeader, Panel, RiskBadge, Stat, StatGrid } from "~~/components/lendsignal";
-import { formatUsd } from "~~/lendsignal/format";
-import { DEMO_CERTIFICATE, DEMO_LOAN, DEMO_VAULT } from "~~/lendsignal/mock";
+import { FlowShell, PageHeader, Panel, RiskBadge, Stat, StatGrid } from "~~/components/kredito";
+import { formatUsd } from "~~/kredito/format";
+import { DEMO_CERTIFICATE, DEMO_LOAN, DEMO_VAULT } from "~~/kredito/mock";
 
 const GATES = [
   { label: "Certificate active", ok: true },
@@ -45,30 +45,30 @@ export default function BorrowPage() {
           >
             <div className="grid sm:grid-cols-2 gap-4">
               <label className="block">
-                <span className="ls-eyebrow">Amount (USD)</span>
+                <span className="k-eyebrow">Amount (USD)</span>
                 <input
                   value={amount}
                   onChange={e => setAmount(e.target.value)}
-                  className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 ls-mono outline-none focus:border-primary"
+                  className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 k-mono outline-none focus:border-primary"
                 />
               </label>
               <label className="block">
-                <span className="ls-eyebrow">Duration (days)</span>
+                <span className="k-eyebrow">Duration (days)</span>
                 <input
                   value={days}
                   onChange={e => setDays(e.target.value)}
-                  className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 ls-mono outline-none focus:border-primary"
+                  className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 k-mono outline-none focus:border-primary"
                 />
               </label>
             </div>
 
             <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-field bg-base-200 px-4 py-3 text-sm">
               <span>
-                Origination fee <span className="ls-mono font-semibold">{formatUsd(fee)}</span>{" "}
+                Origination fee <span className="k-mono font-semibold">{formatUsd(fee)}</span>{" "}
                 <span className="text-base-content/50">({v.originationFeeBps / 100}%)</span>
               </span>
               <span>
-                You receive <span className="ls-mono font-semibold">{formatUsd(principal)}</span>
+                You receive <span className="k-mono font-semibold">{formatUsd(principal)}</span>
               </span>
               <span className="text-base-content/55">repay {formatUsd(principal + fee)} at maturity</span>
             </div>
@@ -77,8 +77,8 @@ export default function BorrowPage() {
               Request loan
             </button>
             <p className="text-xs text-base-content/45 mt-2">
-              Wire to <span className="ls-mono">vault.requestLoan()</span> via{" "}
-              <span className="ls-mono">useSponsoredWrite</span> once deployed.
+              Wire to <span className="k-mono">vault.requestLoan()</span> via{" "}
+              <span className="k-mono">useSponsoredWrite</span> once deployed.
             </p>
           </Panel>
 

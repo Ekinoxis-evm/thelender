@@ -1,7 +1,6 @@
-// Demo data for the LendSignal UI before contracts are deployed. Once
-// `yarn deploy --file DeployLendSignal.s.sol` exports ABIs to deployedContracts.ts,
+// Demo data for the Kredito UI before contracts are deployed. Once
+// `yarn deploy --file DeployKredito.s.sol` exports ABIs to deployedContracts.ts,
 // swap these for `useScaffoldReadContract` results (shapes already match types.ts).
-
 import type { BusinessProfile, CreditCertificate, Loan, VaultState } from "./types";
 
 export const DEMO_PROFILE: BusinessProfile = {

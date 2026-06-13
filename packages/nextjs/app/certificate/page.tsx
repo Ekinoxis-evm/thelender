@@ -8,9 +8,9 @@ import {
   RiskBadge,
   Stat,
   StatGrid,
-} from "~~/components/lendsignal";
-import { STATUS_META, daysUntil, formatDate } from "~~/lendsignal/format";
-import { DEMO_CERTIFICATE } from "~~/lendsignal/mock";
+} from "~~/components/kredito";
+import { STATUS_META, daysUntil, formatDate } from "~~/kredito/format";
+import { DEMO_CERTIFICATE } from "~~/kredito/mock";
 
 export default function CertificatePage() {
   const c = DEMO_CERTIFICATE;
@@ -49,7 +49,7 @@ export default function CertificatePage() {
           <Panel eyebrow="Identity" title="ENS gate">
             <div className="flex items-center gap-2">
               <CheckBadgeIcon className="h-5 w-5 text-success" />
-              <span className="ls-mono">{c.ensName}</span>
+              <span className="k-mono">{c.ensName}</span>
               <span className="text-sm text-base-content/55">resolves to the borrower wallet</span>
             </div>
             <p className="mt-2 text-xs text-base-content/55">
@@ -68,7 +68,7 @@ export default function CertificatePage() {
 
           <div className="flex items-center gap-2 text-sm text-base-content/60">
             <LockClosedIcon className="h-4 w-4" />
-            Soulbound — transfers and approvals revert (ERC-5192 <span className="ls-mono">locked</span>).
+            Soulbound — transfers and approvals revert (ERC-5192 <span className="k-mono">locked</span>).
           </div>
         </div>
       </div>

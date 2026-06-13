@@ -1,4 +1,4 @@
-// Domain types for the LendSignal credit layer. These mirror the onchain
+// Domain types for the Kredito credit layer. These mirror the onchain
 // CreditCertificateRegistry / LendingVault data so UI components can be wired to
 // `useScaffoldReadContract` later with minimal changes.
 

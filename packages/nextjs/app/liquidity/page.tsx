@@ -2,9 +2,9 @@
 
 import { useState } from "react";
 import { ArrowRightIcon, ShieldCheckIcon } from "@heroicons/react/24/outline";
-import { FlowShell, PageHeader, Panel, Stat, StatGrid } from "~~/components/lendsignal";
-import { formatUsd } from "~~/lendsignal/format";
-import { DEMO_VAULT } from "~~/lendsignal/mock";
+import { FlowShell, PageHeader, Panel, Stat, StatGrid } from "~~/components/kredito";
+import { formatUsd } from "~~/kredito/format";
+import { DEMO_VAULT } from "~~/kredito/mock";
 
 export default function LiquidityPage() {
   const v = DEMO_VAULT;
@@ -24,19 +24,19 @@ export default function LiquidityPage() {
         <div className="lg:col-span-2 space-y-5">
           <Panel eyebrow="Provide liquidity" title="Deposit">
             <label className="block">
-              <span className="ls-eyebrow">Amount (USD)</span>
+              <span className="k-eyebrow">Amount (USD)</span>
               <input
                 value={amount}
                 onChange={e => setAmount(e.target.value)}
-                className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 ls-mono outline-none focus:border-primary"
+                className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 k-mono outline-none focus:border-primary"
               />
             </label>
             <button className="btn btn-primary mt-4" disabled>
               Deposit liquidity
             </button>
             <p className="text-xs text-base-content/45 mt-2">
-              Wire to <span className="ls-mono">vault.deposit()</span> (or an approve+deposit batch via{" "}
-              <span className="ls-mono">sendCalls</span>) once deployed.
+              Wire to <span className="k-mono">vault.deposit()</span> (or an approve+deposit batch via{" "}
+              <span className="k-mono">sendCalls</span>) once deployed.
             </p>
           </Panel>
 
@@ -75,10 +75,10 @@ export default function LiquidityPage() {
           <Panel eyebrow="Default fund" title="Protection">
             <div className="flex items-center gap-2 text-sm">
               <ShieldCheckIcon className="h-5 w-5 text-success" />
-              Covers up to <span className="ls-mono font-semibold">{formatUsd(v.reserveUsd)}</span> of defaults
+              Covers up to <span className="k-mono font-semibold">{formatUsd(v.reserveUsd)}</span> of defaults
             </div>
             <p className="mt-2 text-xs text-base-content/55">
-              Built into the vault — no third contract. On <span className="ls-mono">markDefault</span>, the reserve
+              Built into the vault — no third contract. On <span className="k-mono">markDefault</span>, the reserve
               moves into liquidity so LPs stay whole.
             </p>
           </Panel>

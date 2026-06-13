@@ -9,8 +9,8 @@ type StatProps = {
 
 export const Stat = ({ label, value, hint, mono }: StatProps) => (
   <div>
-    <p className="ls-eyebrow mb-1">{label}</p>
-    <p className={`text-xl font-semibold leading-tight ${mono ? "ls-mono" : ""}`}>{value}</p>
+    <p className="k-eyebrow mb-1">{label}</p>
+    <p className={`text-xl font-semibold leading-tight ${mono ? "k-mono" : ""}`}>{value}</p>
     {hint && <p className="text-xs text-base-content/55 mt-0.5">{hint}</p>}
   </div>
 );

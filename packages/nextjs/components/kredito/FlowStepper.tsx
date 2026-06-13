@@ -1,13 +1,13 @@
 import Link from "next/link";
 import { CheckIcon } from "@heroicons/react/24/solid";
-import { FLOW } from "~~/lendsignal/flow";
+import { FLOW } from "~~/kredito/flow";
 
-/** Compact horizontal stepper over the LendSignal flow. */
+/** Compact horizontal stepper over the Kredito flow. */
 export const FlowStepper = ({ activeKey }: { activeKey?: string }) => {
   const activeIdx = FLOW.findIndex(s => s.key === activeKey);
 
   return (
-    <nav className="ls-card p-2 flex items-center gap-1 overflow-x-auto">
+    <nav className="k-card p-2 flex items-center gap-1 overflow-x-auto">
       {FLOW.map((s, i) => {
         const isActive = s.key === activeKey;
         const isDone = activeIdx >= 0 && i < activeIdx;
@@ -20,7 +20,7 @@ export const FlowStepper = ({ activeKey }: { activeKey?: string }) => {
             }`}
           >
             <span
-              className={`ls-mono inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${
+              className={`k-mono inline-flex h-5 w-5 items-center justify-center rounded-full text-[11px] ${
                 isActive
                   ? "bg-primary-content/20"
                   : isDone

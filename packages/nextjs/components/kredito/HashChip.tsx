@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { CheckIcon, DocumentDuplicateIcon } from "@heroicons/react/24/outline";
-import { truncateHex } from "~~/lendsignal/format";
+import { truncateHex } from "~~/kredito/format";
 
 type HashChipProps = {
   value: string;
@@ -30,7 +30,7 @@ export const HashChip = ({ value, label, lead = 6, tail = 4 }: HashChipProps) =>
       type="button"
       onClick={copy}
       title={value}
-      className="group inline-flex items-center gap-2 ls-mono text-sm bg-base-200 hover:bg-base-300 transition-colors rounded-lg px-2.5 py-1.5 max-w-full"
+      className="group inline-flex items-center gap-2 k-mono text-sm bg-base-200 hover:bg-base-300 transition-colors rounded-lg px-2.5 py-1.5 max-w-full"
     >
       {label && <span className="text-base-content/50 text-xs">{label}</span>}
       <span className="truncate">{truncateHex(value, lead, tail)}</span>

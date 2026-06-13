@@ -1,5 +1,5 @@
 import { RiskBadge } from "./RiskBadge";
-import { TIER_META, tierForScore } from "~~/lendsignal/format";
+import { TIER_META, tierForScore } from "~~/kredito/format";
 
 type ScoreMeterProps = {
   score: number;
@@ -16,10 +16,8 @@ export const ScoreMeter = ({ score, max = 1000, size = "lg" }: ScoreMeterProps) 
   return (
     <div>
       <div className="flex items-end gap-2">
-        <span className={`ls-mono font-semibold leading-none ${size === "lg" ? "text-6xl" : "text-4xl"}`}>
-          {score}
-        </span>
-        <span className="ls-mono text-base-content/45 mb-1">/ {max}</span>
+        <span className={`k-mono font-semibold leading-none ${size === "lg" ? "text-6xl" : "text-4xl"}`}>{score}</span>
+        <span className="k-mono text-base-content/45 mb-1">/ {max}</span>
         <span className="ml-auto mb-1">
           <RiskBadge tier={tier} />
         </span>
@@ -29,7 +27,7 @@ export const ScoreMeter = ({ score, max = 1000, size = "lg" }: ScoreMeterProps) 
         <div className={`h-full rounded-full ${meta.dot}`} style={{ width: `${pct}%` }} />
       </div>
 
-      <div className="mt-2 flex justify-between ls-mono text-[11px] text-base-content/40">
+      <div className="mt-2 flex justify-between k-mono text-[11px] text-base-content/40">
         <span>0</span>
         <span>600</span>
         <span>750</span>

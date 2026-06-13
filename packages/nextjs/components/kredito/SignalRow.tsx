@@ -21,8 +21,8 @@ export const SignalRow = ({ name, source, score, weightBps, max = 1000, accent =
           <p className="text-xs text-base-content/55 truncate">{source}</p>
         </div>
         <div className="text-right shrink-0">
-          <p className="ls-mono text-lg font-semibold leading-none">{score}</p>
-          <p className="text-[11px] text-base-content/50 ls-mono">
+          <p className="k-mono text-lg font-semibold leading-none">{score}</p>
+          <p className="text-[11px] text-base-content/50 k-mono">
             ×{weightPct}% → {contribution}
           </p>
         </div>

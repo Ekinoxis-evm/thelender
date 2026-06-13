@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { ArrowRightIcon } from "@heroicons/react/24/outline";
-import { FlowShell, HashChip, PageHeader, Panel, ScoreMeter, SignalRow } from "~~/components/lendsignal";
-import { DEMO_CERTIFICATE } from "~~/lendsignal/mock";
+import { FlowShell, HashChip, PageHeader, Panel, ScoreMeter, SignalRow } from "~~/components/kredito";
+import { DEMO_CERTIFICATE } from "~~/kredito/mock";
 
 export default function ScorePage() {
   const c = DEMO_CERTIFICATE;
@@ -36,7 +36,7 @@ export default function ScorePage() {
             />
           </div>
 
-          <div className="mt-6 rounded-field bg-base-200 px-4 py-3 ls-mono text-sm">
+          <div className="mt-6 rounded-field bg-base-200 px-4 py-3 k-mono text-sm">
             combinedScore = {c.confidentialAiScore}·70% + {c.bureauScore}·30% ={" "}
             <span className="font-semibold">{c.combinedScore}</span>
           </div>
@@ -49,15 +49,15 @@ export default function ScorePage() {
             </p>
             <div className="space-y-2.5">
               <div>
-                <p className="ls-eyebrow mb-1">Attestation</p>
+                <p className="k-eyebrow mb-1">Attestation</p>
                 <HashChip value={c.attestationHash} />
               </div>
               <div>
-                <p className="ls-eyebrow mb-1">Bureau report</p>
+                <p className="k-eyebrow mb-1">Bureau report</p>
                 <HashChip value={c.bureauReportHash} />
               </div>
               <div>
-                <p className="ls-eyebrow mb-1">Evidence digest</p>
+                <p className="k-eyebrow mb-1">Evidence digest</p>
                 <HashChip value={c.evidenceDigest} />
               </div>
             </div>

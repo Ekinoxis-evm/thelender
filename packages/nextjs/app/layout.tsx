@@ -27,9 +27,9 @@ const ibmPlexSerif = IBM_Plex_Serif({
 });
 
 export const metadata = getMetadata({
-  title: "LendSignal — onchain credit & lending",
+  title: "Kredito — onchain credit & lending",
   description:
-    "LendSignal turns a business wallet into an updateable onchain Credit Certificate for undercollateralized working-capital loans.",
+    "Kredito turns a business wallet into an updateable onchain Credit Certificate for undercollateralized working-capital loans.",
 });
 
 const ScaffoldEthApp = ({ children }: { children: React.ReactNode }) => {
