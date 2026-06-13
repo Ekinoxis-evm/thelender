@@ -1,0 +1,11 @@
+# gitleaks allowlist — known non-secrets flagged by the generic rules.
+# Real secrets live only in gitignored .env / .env.local files (never committed).
+.agents/skills/chainlink-data-streams-skill/references/public-endpoints-and-addresses.md:generic-api-key:146
+.agents/skills/chainlink-data-streams-skill/references/public-endpoints-and-addresses.md:generic-api-key:147
+.claude/skills/privy/SKILL.md:curl-auth-user:50
+.yarn/releases/yarn-4.13.0.cjs:generic-api-key:583
+packages/foundry/.env.example:generic-api-key:15
+packages/foundry/.env.example:generic-api-key:17
+packages/nextjs/scaffold.config.ts:generic-api-key:12
+packages/nextjs/utils/scaffold-eth/networks.ts:generic-api-key:60
+packages/nextjs/utils/scaffold-eth/networks.ts:generic-api-key:64
