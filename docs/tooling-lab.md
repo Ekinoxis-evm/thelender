@@ -60,6 +60,6 @@ The full set of tooling wired into this workspace. **Base framework: Scaffold-ET
 - [ ] MCP keys → Supabase (`SUPABASE_ACCESS_TOKEN`, `SUPABASE_PROJECT_REF`), `RAILWAY_API_TOKEN`, `BLOCKSCOUT_PRO_API_KEY`, `GRAPH_GATEWAY_API_KEY`, `GRAPH_TOKEN_API_JWT`
 - [ ] App keys → `NEXT_PUBLIC_ALCHEMY_API_KEY`, `NEXT_PUBLIC_PRIVY_APP_ID` (+ `PRIVY_APP_SECRET`), `ETHERSCAN_API_KEY`
 
-## Pending / next
-- **Swap RainbowKit → Privy** in `packages/nextjs/services/web3/wagmiConnectors.tsx` (run `/setup-privy`).
-- Optional adds when needed: WalletConnect projectId, Tenderly, an Alchemy MCP.
+## Done / next
+- ✅ **Privy is the default wallet/auth** with sponsored ERC-4337 smart wallets (RainbowKit removed). Runtime needs `NEXT_PUBLIC_PRIVY_APP_ID` + a dashboard paymaster — see `docs/privy.md`.
+- Optional adds when needed: Tenderly, an Alchemy MCP. Cleanup: remove dormant RainbowKit deps/files once confirmed unused.

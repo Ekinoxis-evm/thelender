@@ -11,7 +11,7 @@ Hackathon-grade Web3 application. This file is the shared project memory for Cla
 |-------|--------|-------|
 | Base scaffold | **Scaffold-ETH 2** | Yarn-4 monorepo: `packages/nextjs` + `packages/foundry`. Hot-reload contracts→frontend, burner wallet, local chain, faucet. |
 | App | Next.js (App Router) + TS | `packages/nextjs`. Deploy on Vercel. |
-| Auth + wallets | **Privy** (swapping in) | Target: `@privy-io/react-auth` embedded/social wallets. SE-2 ships **RainbowKit** by default in `packages/nextjs/services/web3/wagmiConnectors.tsx` — the Privy swap is a pending task (use `/setup-privy`). |
+| Auth + wallets | **Privy** (default) | `@privy-io/react-auth` + `@privy-io/wagmi`: login (email/wallet/google), embedded wallets on login, **ERC-4337 smart wallets with gas sponsorship** (paymaster set in Privy Dashboard). RainbowKit removed (files dormant). Needs `NEXT_PUBLIC_PRIVY_APP_ID` at runtime + dashboard paymaster — see `docs/privy.md`. |
 | Chain I/O | **viem** + **wagmi** | SE-2's typed `useScaffoldReadContract` / `useScaffoldWriteContract` hooks wrap wagmi — prefer them. |
 | ENS | viem ENS actions | Resolution always reads **Ethereum Mainnet**, even if the app runs on an L2. |
 | Oracles / onchain data | **Chainlink** | Data Feeds, VRF, CCIP, Data Streams, Functions. |
