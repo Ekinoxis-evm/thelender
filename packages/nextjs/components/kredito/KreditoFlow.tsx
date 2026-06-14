@@ -274,70 +274,57 @@ const DocSlot = ({
   </div>
 );
 
-/** Animated multi-step loader shown while the map→reduce pipeline runs. */
+/**
+ * Honest loader for the map→reduce pipeline. The per-document inferences run IN PARALLEL inside
+ * the TEE and the single request only returns at the very end, so we don't have real per-step
+ * status mid-flight. Rather than fake step completion (which looked "done but stuck"), show a calm
+ * analyzing state with the live elapsed clock and an accurate 2–4 minute expectation.
+ */
 const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
-  const [done, setDone] = useState(0);
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
-    setDone(0);
     setElapsed(0);
-    const stepTimer = setInterval(() => setDone(d => Math.min(d + 1, steps.length - 1)), 12000);
     const clock = setInterval(() => setElapsed(e => e + 1), 1000);
-    return () => {
-      clearInterval(stepTimer);
-      clearInterval(clock);
-    };
-  }, [steps.length]);
+    return () => clearInterval(clock);
+  }, []);
 
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
-  const onLast = done >= steps.length - 1;
+  const docSteps = steps.slice(0, -1); // per-document analyses
+  const reduceStep = steps[steps.length - 1]; // final reduce
 
   return (
     <div className="k-card p-6 max-w-2xl mx-auto">
       <div className="flex items-center justify-between gap-3 mb-1">
         <div className="flex items-center gap-3">
           <span className="loading loading-spinner loading-md text-primary" />
-          <p className="font-semibold">Running confidential analysis…</p>
+          <p className="font-semibold">Analyzing in the Chainlink TEE…</p>
         </div>
         <span className="k-mono text-sm text-base-content/60 tabular-nums">{mmss}</span>
       </div>
-      <p className="text-xs text-base-content/55 mb-5">
-        Each document is analyzed one by one in the Chainlink TEE, then reduced to a decision. PDFs go through Docling
-        preprocessing, so this can take ~2–3 minutes — keep this tab open.
+      <p className="text-xs text-base-content/55 mb-4">
+        Your {docSteps.length} document{docSteps.length === 1 ? "" : "s"} {docSteps.length === 1 ? "is" : "are"}{" "}
+        analyzed privately inside the enclave (in parallel), then reduced to a credit decision. This typically takes{" "}
+        <span className="font-medium text-base-content/75">2–4 minutes</span> — keep this tab open.
       </p>
+      <div className="h-1.5 w-full overflow-hidden rounded-full bg-base-300 mb-4">
+        <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+      </div>
       <ul className="space-y-2.5">
-        {steps.map((s, i) => {
-          const isLastStep = i === steps.length - 1;
-          // The final step keeps spinning (with the elapsed clock) until the server responds.
-          const isDone = i < done && !(isLastStep && onLast);
-          const isCurrent = i === done || (isLastStep && onLast);
-          return (
-            <li key={s} className="flex items-center gap-3 text-sm">
-              <span
-                className={`grid place-items-center h-5 w-5 rounded-full shrink-0 ${
-                  isDone ? "bg-success text-success-content" : isCurrent ? "bg-primary/15" : "bg-base-300"
-                }`}
-              >
-                {isDone ? (
-                  <CheckIcon className="h-3 w-3" />
-                ) : isCurrent ? (
-                  <span className="loading loading-spinner loading-xs" />
-                ) : (
-                  i + 1
-                )}
-              </span>
-              <span className={isDone ? "text-base-content/60" : isCurrent ? "font-medium" : "text-base-content/45"}>
-                {s}
-              </span>
-            </li>
-          );
-        })}
+        {docSteps.map(s => (
+          <li key={s} className="flex items-center gap-3 text-sm">
+            <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-primary/15">
+              <span className="loading loading-spinner loading-xs" />
+            </span>
+            <span className="font-medium">{s}</span>
+          </li>
+        ))}
+        <li className="flex items-center gap-3 text-sm">
+          <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-base-300 text-base-content/55 text-xs">
+            ∑
+          </span>
+          <span className="text-base-content/55">{reduceStep} — runs once all documents finish</span>
+        </li>
       </ul>
-      {onLast && (
-        <p className="mt-4 text-xs text-base-content/50">
-          Finalizing the verdict — almost there. Large PDFs can push this past 2 minutes.
-        </p>
-      )}
     </div>
   );
 };
