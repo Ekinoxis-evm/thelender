@@ -6,6 +6,7 @@ import {
 } from "~~/services/lendsignal/confidentialAi";
 import { type BorrowerStrength, evaluateBureau } from "~~/services/lendsignal/creditBureau";
 import { getDemoProfile } from "~~/services/lendsignal/demoProfiles";
+import { persistCreditCheck } from "~~/services/lendsignal/persistence";
 import { buildScoreResult, fallbackAiResult, parseAiOutput } from "~~/services/lendsignal/score";
 import type { BusinessProfile, ConfidentialAiResult, UploadedDocument } from "~~/services/lendsignal/types";
 
@@ -32,6 +33,8 @@ type RequestBody = {
   documents?: UploadedDocument[];
   demoProfileId?: string;
   strength?: BorrowerStrength;
+  /** Connected wallet (credit identity) — stored with the check. */
+  borrower?: string;
 };
 
 export async function POST(req: NextRequest) {
@@ -120,6 +123,9 @@ export async function POST(req: NextRequest) {
     documentsBase64,
     nowSeconds,
   });
+
+  // Persist the normalized check (best-effort; never blocks the response on failure).
+  await persistCreditCheck({ result, profile, borrower: body.borrower });
 
   return NextResponse.json({ ...result, ...(note ? { note } : {}) });
 }

@@ -9,6 +9,7 @@ import {
   ArrowUpTrayIcon,
   CheckCircleIcon,
   CheckIcon,
+  DocumentDuplicateIcon,
   ShieldCheckIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
@@ -197,10 +198,9 @@ export const KreditoFlow = () => {
         ensName: profile.ensName || undefined,
       };
       // Uploaded documents take the real path; otherwise the chosen demo archetype.
+      const base = { profile: apiProfile, borrower: address };
       const body =
-        uploadedDocs.length > 0
-          ? { profile: apiProfile, documents: uploadedDocs }
-          : { profile: apiProfile, demoProfileId: archetype };
+        uploadedDocs.length > 0 ? { ...base, documents: uploadedDocs } : { ...base, demoProfileId: archetype };
 
       const res = await fetch("/api/lendsignal/score", {
         method: "POST",
@@ -379,6 +379,11 @@ const ScoreSection = ({
 }) => {
   const ai = result.scoreInputs.confidentialAiScore;
   const bureau = result.scoreInputs.bureauScore;
+  const tokens = result.usage ? result.usage.prompt_tokens + result.usage.completion_tokens : undefined;
+  const copyId = () => {
+    navigator.clipboard?.writeText(result.inferenceId);
+    notification.success("Chainlink request ID copied");
+  };
   return (
     <>
       <PageHeader
@@ -428,13 +433,33 @@ const ScoreSection = ({
               <p className="text-sm text-base-content/70">{result.confidentialAi.reasoning_summary}</p>
             </div>
           )}
-          <div className="mt-3 flex flex-wrap gap-x-6 text-xs text-base-content/55">
-            <span>
+          {/* Chainlink Confidential AI — the request id is the on-record proof of the inference */}
+          <div className="mt-5 rounded-field border border-primary/30 bg-primary/5 px-4 py-3">
+            <div className="flex items-center justify-between gap-2">
+              <p className="k-eyebrow flex items-center gap-1.5">
+                <ShieldCheckIcon className="h-4 w-4 text-primary" /> Chainlink request ID
+              </p>
+              {result.attested ? (
+                <span className="badge badge-success badge-sm">attested · TEE</span>
+              ) : (
+                <span className="badge badge-ghost badge-sm">mock</span>
+              )}
+            </div>
+            <div className="mt-1.5 flex items-center gap-2">
+              <code className="k-mono text-sm break-all flex-1">{result.inferenceId}</code>
+              <button type="button" onClick={copyId} className="btn btn-ghost btn-xs gap-1 shrink-0">
+                <DocumentDuplicateIcon className="h-3.5 w-3.5" /> Copy
+              </button>
+            </div>
+            <p className="mt-1.5 text-xs text-base-content/55">
               model <span className="k-mono">{result.model}</span>
-            </span>
-            <span>
-              request <span className="k-mono">{result.inferenceId}</span>
-            </span>
+              {tokens !== undefined && (
+                <>
+                  {" · "}
+                  <span className="k-mono">{tokens}</span> tokens
+                </>
+              )}
+            </p>
           </div>
         </Panel>
 
