@@ -21,7 +21,8 @@ import type {
 import { keccak256, stringToBytes } from "viem";
 
 export const MIN_ELIGIBLE_SCORE = 400;
-export const CERTIFICATE_VALIDITY_SECONDS = 90 * 24 * 60 * 60; // 90 days
+// 30 days — matches the vault's MAX_ATTESTATION_TTL (the issued attestation can't live longer).
+export const CERTIFICATE_VALIDITY_SECONDS = 30 * 24 * 60 * 60;
 
 const clampScore = (n: number) => Math.max(0, Math.min(1000, Math.round(n)));
 

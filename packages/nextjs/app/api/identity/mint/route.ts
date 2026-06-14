@@ -78,6 +78,26 @@ export async function POST(req: NextRequest) {
   const account = privateKeyToAccount(issuerKey);
   const client = createWalletClient({ account, chain: sepolia, transport: http(sepoliaRpc()) }).extend(publicActions);
 
+  // Onchain availability check — the controller's `issued` mapping is the source of truth and can
+  // be ahead of the Supabase mirror (e.g. minted before persistence). Catches it before spending gas.
+  const node = labelToNode(label);
+  try {
+    const taken = await client.readContract({
+      address: controller,
+      abi: kreditoControllerAbi,
+      functionName: "issued",
+      args: [node],
+    });
+    if (taken) {
+      return NextResponse.json(
+        { error: "label_taken", message: `${fullName(label)} is already taken — choose another name.` },
+        { status: 409 },
+      );
+    }
+  } catch {
+    // Non-fatal: if the read fails, fall through — the onchain mint still guards with AlreadyIssued.
+  }
+
   let txHash: Hex;
   try {
     txHash = await client.writeContract({
@@ -88,20 +108,35 @@ export async function POST(req: NextRequest) {
     });
     await client.waitForTransactionReceipt({ hash: txHash });
   } catch (e) {
-    return NextResponse.json({ error: `Mint failed: ${(e as Error).message}` }, { status: 502 });
+    // AlreadyIssued (0x52bf3fc8) → friendly "name taken"; otherwise surface the message.
+    const msg = (e as Error).message ?? "";
+    if (/AlreadyIssued|0x52bf3fc8|already/i.test(msg)) {
+      return NextResponse.json(
+        { error: "label_taken", message: `${fullName(label)} is already taken — choose another name.` },
+        { status: 409 },
+      );
+    }
+    return NextResponse.json({ error: `Mint failed: ${msg}` }, { status: 502 });
   }
 
+  // The onchain mint already succeeded — mirroring to Supabase is best-effort. Never 500 the whole
+  // request (and lose the txHash) on a mirror hiccup; the profile step can re-sync the row.
   const clean = sanitizeProfile(profile);
-  const identity = await insertIdentity({
-    label,
-    wallet_address: wallet,
-    full_name: fullName(label),
-    node: labelToNode(label),
-    status: "approved",
-    attestation_hash: decision.attestation_hash,
-    tx_hash: txHash,
-    ...clean,
-  });
+  let identity = null;
+  try {
+    identity = await insertIdentity({
+      label,
+      wallet_address: wallet,
+      full_name: fullName(label),
+      node,
+      status: "approved",
+      attestation_hash: decision.attestation_hash,
+      tx_hash: txHash,
+      ...clean,
+    });
+  } catch (e) {
+    console.warn("[mint] identity minted onchain but mirror insert failed:", (e as Error).message);
+  }
 
   return NextResponse.json({ identity, txHash });
 }

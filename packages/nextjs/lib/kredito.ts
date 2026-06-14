@@ -220,6 +220,25 @@ export const kreditoControllerAbi = [
     ],
     outputs: [],
   },
+  // Reads — availability check (issued[node]) + node derivation.
+  {
+    type: "function",
+    name: "issued",
+    stateMutability: "view",
+    inputs: [{ name: "node", type: "bytes32" }],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "nodeOf",
+    stateMutability: "view",
+    inputs: [{ name: "label", type: "string" }],
+    outputs: [{ name: "", type: "bytes32" }],
+  },
+  // Custom errors — so viem decodes reverts into readable messages (esp. AlreadyIssued).
+  { type: "error", name: "AlreadyIssued", inputs: [{ name: "node", type: "bytes32" }] },
+  { type: "error", name: "ResolverNotSet", inputs: [] },
+  { type: "error", name: "SubRegistryNotSet", inputs: [] },
 ] as const;
 
 /** Minimal ABI for owner-side, sponsored profile writes (batched). */

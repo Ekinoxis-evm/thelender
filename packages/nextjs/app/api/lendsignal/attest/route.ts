@@ -51,12 +51,11 @@ export async function POST(req: NextRequest) {
   if (
     !isAddress(body.borrower) ||
     typeof body.score !== "number" ||
-    !body.expiresAt ||
     !isBytes32(body.evidenceDigest) ||
     typeof body.maxPrincipal !== "string"
   ) {
     return NextResponse.json(
-      { error: "invalid_request", message: "borrower/score/evidenceDigest/expiresAt/maxPrincipal required." },
+      { error: "invalid_request", message: "borrower/score/evidenceDigest/maxPrincipal required." },
       { status: 400 },
     );
   }
@@ -80,17 +79,11 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  // H-1: the vault rejects windows longer than MAX_ATTESTATION_TTL. The issuer is authoritative over
+  // the window — derive it here (issuedAt = now, expiresAt = now + max TTL) rather than trusting the
+  // client's expiresAt (the score uses a longer display validity). This is always within the cap.
   const issuedAt = Math.floor(Date.now() / 1000);
-  // H-1: the vault rejects windows longer than MAX_ATTESTATION_TTL; reject early with a clear message.
-  if (body.expiresAt <= issuedAt || body.expiresAt - issuedAt > MAX_ATTESTATION_TTL_SECONDS) {
-    return NextResponse.json(
-      {
-        error: "invalid_request",
-        message: `expiresAt must be in the future and within ${MAX_ATTESTATION_TTL_SECONDS}s of now.`,
-      },
-      { status: 400 },
-    );
-  }
+  const expiresAt = issuedAt + MAX_ATTESTATION_TTL_SECONDS;
 
   const attestation: CreditAttestation = {
     borrower: body.borrower,
@@ -98,7 +91,7 @@ export async function POST(req: NextRequest) {
     riskTier: riskTierToUint(body.riskTier),
     evidenceDigest: body.evidenceDigest,
     issuedAt,
-    expiresAt: body.expiresAt,
+    expiresAt,
     maxPrincipal,
   };
 
