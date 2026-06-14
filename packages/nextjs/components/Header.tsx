@@ -3,6 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { hardhat } from "viem/chains";
+import { GlobeAltIcon } from "@heroicons/react/24/outline";
 import { FaucetButton, PrivyConnectButton } from "~~/components/scaffold-eth";
 import { useTargetNetwork } from "~~/hooks/scaffold-eth";
 
@@ -45,6 +46,10 @@ export const Header = () => {
         <BrandMark />
       </div>
       <div className="navbar-end gap-2">
+        <Link href="/ens" className="btn btn-ghost btn-sm gap-1.5">
+          <GlobeAltIcon className="h-4 w-4" />
+          <span className="hidden sm:inline">Verify</span>
+        </Link>
         <PrivyConnectButton />
         {isLocalNetwork && <FaucetButton />}
       </div>

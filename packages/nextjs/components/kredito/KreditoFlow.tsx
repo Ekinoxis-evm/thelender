@@ -2,25 +2,41 @@
 
 import { useEffect, useState } from "react";
 import { Address as AddressDisplay } from "@scaffold-ui/components";
+import { encodeFunctionData, formatUnits, parseUnits, recoverTypedDataAddress } from "viem";
+import { useReadContract } from "wagmi";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
   ArrowTopRightOnSquareIcon,
   ArrowUpTrayIcon,
+  BanknotesIcon,
   CheckCircleIcon,
   CheckIcon,
   DocumentDuplicateIcon,
+  GlobeAltIcon,
   ShieldCheckIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { CertificateCard, HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
+import { useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
+import { toTypedMessage, typedData } from "~~/kredito/attestation";
+import { RESOLVER_ABI, buildSetTextCalls, getResolver, namehash, normalize } from "~~/kredito/ens";
 import { formatUsd } from "~~/kredito/format";
 import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
 import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
 import { useKreditoWallet } from "~~/kredito/useWallet";
+import {
+  ERC20_ABI,
+  KREDITO_VAULT_ADDRESS,
+  type SignedAttestation,
+  VAULT_ABI,
+  VAULT_CHAIN_ID,
+  type VaultLoan,
+  sepoliaTxUrl,
+} from "~~/kredito/vault";
 import type { UploadedDocument } from "~~/services/lendsignal/types";
-import { notification } from "~~/utils/scaffold-eth";
+import { getParsedError, notification } from "~~/utils/scaffold-eth";
 
 const STEPS = ["Onboarding", "Score", "Certificate", "Borrow", "Liquidity"] as const;
 
@@ -265,6 +281,8 @@ export const KreditoFlow = () => {
   const [analyzingSteps, setAnalyzingSteps] = useState<string[]>([]);
   const [loadedCase, setLoadedCase] = useState<"success" | "risk" | null>(null);
   const [result, setResult] = useState<StoredScore | null>(null);
+  // The issuer-signed attestation, produced in the Certificate step and consumed by Borrow.
+  const [att, setAtt] = useState<SignedAttestation | null>(null);
 
   const set = (k: keyof typeof profile) => (v: string) => setProfile(p => ({ ...p, [k]: v }));
   const uploadedDocs = Object.values(docs).filter(Boolean) as UploadedDocument[];
@@ -520,13 +538,24 @@ export const KreditoFlow = () => {
         <CertificateSection
           result={result}
           borrower={(address ?? ZERO_ADDR) as `0x${string}`}
+          ensName={profile.ensName ?? ""}
+          att={att}
+          setAtt={setAtt}
           onBack={() => setStep(1)}
           onNext={() => advance(3)}
         />
       )}
 
-      {/* STEP 4 — BORROW (demo) */}
-      {step === 3 && <BorrowSection result={result} onBack={() => setStep(2)} onNext={() => advance(4)} />}
+      {/* STEP 4 — BORROW (onchain) */}
+      {step === 3 && (
+        <BorrowSection
+          result={result}
+          borrower={(address ?? ZERO_ADDR) as `0x${string}`}
+          att={att}
+          onBack={() => setStep(2)}
+          onNext={() => advance(4)}
+        />
+      )}
 
       {/* STEP 5 — LIQUIDITY (demo) */}
       {step === 4 && <LiquiditySection onBack={() => setStep(3)} />}
@@ -827,34 +856,109 @@ const ScoreSection = ({
 const CertificateSection = ({
   result,
   borrower,
+  ensName,
+  att,
+  setAtt,
   onBack,
   onNext,
 }: {
   result: StoredScore;
   borrower: `0x${string}`;
+  ensName: string;
+  att: SignedAttestation | null;
+  setAtt: (a: SignedAttestation | null) => void;
   onBack: () => void;
   onNext: () => void;
 }) => {
   const cert = toCertificate(result, borrower);
-  const [issuing, setIssuing] = useState(false);
-  const [tx, setTx] = useState<{ txHash: string; explorer: string; action: string } | null>(null);
+  const [signing, setSigning] = useState(false);
+  const [verified, setVerified] = useState<boolean | null>(null);
 
-  const issueOnchain = async () => {
-    setIssuing(true);
+  // Verify the signature exactly as the vault does onchain (recover signer == issuer).
+  // Recompute whenever `att` changes, so returning to this step keeps the verified badge.
+  useEffect(() => {
+    if (!att) {
+      setVerified(null);
+      return;
+    }
+    let cancelled = false;
+    recoverTypedDataAddress({ ...typedData(att.attestation), signature: att.signature })
+      .then(r => !cancelled && setVerified(r.toLowerCase() === att.issuer.toLowerCase()))
+      .catch(() => !cancelled && setVerified(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [att]);
+
+  const { writeContractSponsored } = useSponsoredWrite();
+  const [publishing, setPublishing] = useState(false);
+  const [publishTx, setPublishTx] = useState<`0x${string}` | null>(null);
+  const ens = ensName.trim();
+
+  // Publish the signed attestation to the business's ENS name as text records on
+  // Sepolia. The smart wallet must OWN the name (and a resolver must be set), or the
+  // resolver's setText reverts — surfaced as a clear error below.
+  const publishToEns = async () => {
+    if (!att || !ens) return;
+    setPublishing(true);
     try {
-      const res = await fetch("/api/lendsignal/issue", {
+      const resolver = await getResolver(ens);
+      if (!resolver) {
+        notification.error(
+          `No resolver for ${ens} on Sepolia. Register this name on Sepolia and set a Public Resolver first.`,
+        );
+        return;
+      }
+      const node = namehash(normalize(ens));
+      const calls = buildSetTextCalls(node, {
+        ...att.attestation,
+        issuer: att.issuer,
+        signature: att.signature,
+      });
+      const hash = await writeContractSponsored({
+        address: resolver,
+        abi: RESOLVER_ABI,
+        functionName: "multicall",
+        args: [calls],
+      });
+      setPublishTx(hash);
+      notification.success(`Published credit identity to ${ens}`);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Publish failed";
+      const reverted = /revert|execution reverted|not authori|unauthor|owner/i.test(message);
+      notification.error(
+        reverted
+          ? `Publish reverted — the connected smart wallet must own ${ens} on Sepolia (and its resolver).`
+          : message,
+      );
+    } finally {
+      setPublishing(false);
+    }
+  };
+
+  // Option B: the issuer SIGNS an EIP-712 attestation; the vault verifies it onchain.
+  const signAttestation = async () => {
+    setSigning(true);
+    try {
+      const res = await fetch("/api/lendsignal/attest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ borrower, scoreInputs: result.scoreInputs }),
+        body: JSON.stringify({
+          borrower,
+          score: result.combinedScore,
+          riskTier: result.riskTier,
+          evidenceDigest: result.scoreInputs.evidenceDigest,
+          expiresAt: result.scoreInputs.expiresAt,
+        }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.message || json?.error || "Issuance failed");
-      setTx(json);
-      notification.success(`Certificate ${json.action === "update" ? "updated" : "issued"} onchain`);
+      if (!res.ok) throw new Error(json?.message || json?.error || "Signing failed");
+      setAtt(json as SignedAttestation);
+      notification.success("Attestation signed by the protocol issuer");
     } catch (e) {
-      notification.error(e instanceof Error ? e.message : "Issuance failed");
+      notification.error(e instanceof Error ? e.message : "Signing failed");
     } finally {
-      setIssuing(false);
+      setSigning(false);
     }
   };
 
@@ -863,15 +967,15 @@ const CertificateSection = ({
       <PageHeader
         step={3}
         eyebrow="Credit certificate"
-        title="A soulbound credit identity"
-        subtitle="The protocol issuer mints the blended score as an updateable, soulbound Credit Certificate — only scores, risk tier and content hashes go onchain."
+        title="An issuer-signed attestation"
+        subtitle="The protocol issuer signs an EIP-712 attestation over your score. The lending vault verifies the signature onchain (recovers signer == issuer) to gate the loan — the borrower can't forge it, and no certificate registry is needed. Your ENS name is the identity."
       />
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         <div className="flex justify-center">
           <CertificateCard cert={cert} />
         </div>
         <div className="space-y-4">
-          <Panel eyebrow="Summary" title="What gets published">
+          <Panel eyebrow="Summary" title="What gets attested">
             <ul className="space-y-2 text-sm text-base-content/75">
               <li className="flex justify-between">
                 <span>Combined score</span>
@@ -883,49 +987,114 @@ const CertificateSection = ({
               </li>
               <li className="flex justify-between">
                 <span>Status</span>
-                <span className="k-mono">{tx ? "ISSUED" : cert.status}</span>
+                <span className="k-mono">{att ? "ATTESTED" : cert.status}</span>
               </li>
             </ul>
           </Panel>
 
-          <Panel eyebrow="Onchain" title="Issue certificate">
-            {tx ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-success text-sm font-medium">
-                  <CheckCircleIcon className="h-5 w-5 shrink-0" />
-                  Certificate {tx.action === "update" ? "updated" : "issued"} onchain
+          <Panel eyebrow="Issuer attestation · EIP-712" title="Sign credit attestation">
+            {att ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  {verified ? (
+                    <span className="text-success inline-flex items-center gap-1.5">
+                      <CheckCircleIcon className="h-5 w-5" /> Verified — recovered signer = issuer
+                    </span>
+                  ) : (
+                    <span className="text-error">Signature did not verify</span>
+                  )}
                 </div>
                 <div>
-                  <p className="k-eyebrow mb-1">Transaction</p>
-                  <a
-                    href={tx.explorer}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="link k-mono text-xs break-all inline-flex items-center gap-1"
-                  >
-                    {tx.txHash}
-                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
-                  </a>
+                  <p className="k-eyebrow mb-1">Issuer (signer)</p>
+                  <AddressDisplay address={att.issuer} />
                 </div>
+                <div>
+                  <p className="k-eyebrow mb-1">Signature</p>
+                  <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2">{att.signature}</code>
+                </div>
+                <div>
+                  <p className="k-eyebrow mb-1">EIP-712 digest</p>
+                  <HashChip value={att.digest} lead={10} tail={8} />
+                </div>
+                <p className="text-xs text-base-content/50">
+                  The vault calls <code>isEligible(attestation, signature)</code> — it recovers the signer onchain and
+                  checks it equals the issuer. No registry write needed.
+                </p>
               </div>
             ) : (
               <>
                 <p className="text-sm text-base-content/65 mb-3">
-                  The protocol issuer signs <code>issueCertificate</code> with the real attested score and hashes,
-                  minting the soulbound certificate to your wallet. (ENS gating comes later.)
+                  The protocol issuer signs an EIP-712 <code>CreditAttestation</code> (borrower, score, risk tier,
+                  evidence digest, expiry). The vault verifies it onchain to approve the loan.
                 </p>
-                <button className="btn btn-primary btn-sm w-full gap-1" onClick={issueOnchain} disabled={issuing}>
-                  {issuing ? (
+                <button className="btn btn-primary btn-sm w-full gap-1" onClick={signAttestation} disabled={signing}>
+                  {signing ? (
                     <>
-                      <span className="loading loading-spinner loading-xs" /> Issuing onchain…
+                      <span className="loading loading-spinner loading-xs" /> Signing…
                     </>
                   ) : (
                     <>
-                      <ShieldCheckIcon className="h-4 w-4" /> Issue certificate onchain
+                      <ShieldCheckIcon className="h-4 w-4" /> Sign credit attestation
                     </>
                   )}
                 </button>
               </>
+            )}
+          </Panel>
+
+          {/* Step 2 — publish the signed attestation to the business's ENS name (Sepolia). */}
+          <Panel eyebrow="ENS credit identity · Sepolia" title="Publish to ENS">
+            {att ? (
+              <div className="space-y-3">
+                <p className="text-sm text-base-content/65">
+                  Publish the signed attestation as text records on{" "}
+                  {ens ? <span className="k-mono font-medium">{ens}</span> : "your ENS name"}. Anyone can then look it
+                  up and verify the score — ENS is the identity, the issuer signature is the trust.
+                </p>
+                {!ens && (
+                  <div className="rounded-field bg-warning/10 text-warning text-xs px-3 py-2">
+                    No ENS name set on the onboarding form. Go back and enter your business&apos;s ENS name to publish.
+                  </div>
+                )}
+                <button
+                  className="btn btn-primary btn-sm w-full gap-1"
+                  onClick={publishToEns}
+                  disabled={publishing || !ens}
+                >
+                  {publishing ? (
+                    <>
+                      <span className="loading loading-spinner loading-xs" /> Publishing…
+                    </>
+                  ) : (
+                    <>
+                      <GlobeAltIcon className="h-4 w-4" /> Publish to ENS (Sepolia)
+                    </>
+                  )}
+                </button>
+                {publishTx && (
+                  <div className="space-y-2">
+                    <div>
+                      <p className="k-eyebrow mb-1">Publish transaction</p>
+                      <HashChip value={publishTx} lead={10} tail={8} />
+                    </div>
+                    <a
+                      href={`/ens?name=${encodeURIComponent(ens)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="link text-sm inline-flex items-center gap-1"
+                    >
+                      Verify on the ENS page
+                      <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
+                )}
+                <p className="text-xs text-base-content/50">
+                  The connected smart wallet must own this name on Sepolia and have a Public Resolver set, otherwise the
+                  publish transaction reverts. The write is gas-sponsored.
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-base-content/55">Sign the attestation above first, then publish it to ENS.</p>
             )}
           </Panel>
         </div>
@@ -942,46 +1111,307 @@ const CertificateSection = ({
   );
 };
 
+const Stat = ({ label, value }: { label: string; value: string }) => (
+  <div>
+    <p className="k-eyebrow mb-1">{label}</p>
+    <p className="k-mono text-2xl font-semibold">{value}</p>
+  </div>
+);
+
 const BorrowSection = ({
   result,
+  borrower,
+  att,
   onBack,
   onNext,
 }: {
   result: StoredScore | null;
+  borrower: `0x${string}`;
+  att: SignedAttestation | null;
   onBack: () => void;
   onNext: () => void;
 }) => {
-  const eligible = result?.eligible ?? false;
-  const limit = result?.bureau.recommendedCreditLimitUsd ?? DEMO_VAULT.liquidityUsd;
-  const fee = Math.round((limit * DEMO_VAULT.originationFeeBps) / 10_000);
+  const configured = KREDITO_VAULT_ADDRESS.length > 0;
+  const vault = configured ? (KREDITO_VAULT_ADDRESS as `0x${string}`) : undefined;
+  const { writeContractSponsored, sendCalls } = useSponsoredWrite();
+
+  // --- Onchain reads (Sepolia). Disabled until the vault address is configured. ---
+  const { data: liquidity, refetch: refetchLiquidity } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "liquidity",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured },
+  });
+  const { data: minScoreData } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "minScore",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured },
+  });
+  const { data: assetAddr } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "asset",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured },
+  });
+  const { data: openLoanId, refetch: refetchOpenLoan } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "openLoanOf",
+    args: [borrower],
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured && borrower !== ZERO_ADDR },
+  });
+  const { data: decimalsData } = useReadContract({
+    address: assetAddr,
+    abi: ERC20_ABI,
+    functionName: "decimals",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: !!assetAddr },
+  });
+  const { data: symbolData } = useReadContract({
+    address: assetAddr,
+    abi: ERC20_ABI,
+    functionName: "symbol",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: !!assetAddr },
+  });
+  const hasOpenLoan = typeof openLoanId === "bigint" && openLoanId !== 0n;
+  const { data: loanData, refetch: refetchLoan } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "getLoan",
+    args: hasOpenLoan ? [openLoanId] : undefined,
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured && hasOpenLoan },
+  });
+
+  const dec = typeof decimalsData === "number" ? decimalsData : 6;
+  const sym = typeof symbolData === "string" ? symbolData : "mUSDC";
+  const liq = typeof liquidity === "bigint" ? Number(formatUnits(liquidity, dec)) : 0;
+  const floor = typeof minScoreData === "bigint" ? Number(minScoreData) : DEMO_VAULT.minScore;
+  const loan = loanData as VaultLoan | undefined;
+
+  const score = att?.attestation.score ?? result?.combinedScore ?? 0;
+  const limitUsd = result?.bureau.recommendedCreditLimitUsd ?? DEMO_VAULT.liquidityUsd;
+  // Demo: 1 token unit (mUSDC) == $1, so borrowable = min(credit limit, pool liquidity).
+  const maxBorrow = Math.max(0, Math.min(limitUsd, liq || limitUsd));
+
+  const [amount, setAmount] = useState("");
+  const [borrowing, setBorrowing] = useState(false);
+  const [repaying, setRepaying] = useState(false);
+  const [loanTx, setLoanTx] = useState<{ hash: string; amount: string } | null>(null);
+  // Expiry uses Date.now() (impure at render) → evaluate it in an effect.
+  const [expired, setExpired] = useState(false);
+
+  useEffect(() => {
+    if (maxBorrow > 0) setAmount(a => a || String(Math.floor(maxBorrow)));
+  }, [maxBorrow]);
+
+  useEffect(() => {
+    setExpired(!!att && att.attestation.expiresAt <= Math.floor(Date.now() / 1000));
+  }, [att]);
+
+  // Mirrors the vault's isEligible (the contract is the real gate; this drives the UI).
+  const eligible = !!att && att.attestation.score >= floor && att.attestation.riskTier !== 0 && !expired;
+
+  const doBorrow = async () => {
+    if (!vault || !att) {
+      notification.error("Sign your credit attestation in the Certificate step first.");
+      return;
+    }
+    let amt: bigint;
+    try {
+      amt = parseUnits((amount || "0").replace(/,/g, ""), dec);
+    } catch {
+      notification.error("Invalid amount.");
+      return;
+    }
+    if (amt <= 0n) {
+      notification.error("Enter an amount to borrow.");
+      return;
+    }
+    setBorrowing(true);
+    try {
+      const hash = await writeContractSponsored({
+        address: vault,
+        abi: VAULT_ABI,
+        functionName: "borrow",
+        args: [toTypedMessage(att.attestation), att.signature, amt],
+      });
+      setLoanTx({ hash, amount });
+      notification.success("Loan disbursed onchain (gas-sponsored)");
+      void refetchLiquidity();
+      void refetchOpenLoan();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBorrowing(false);
+    }
+  };
+
+  const doRepay = async () => {
+    if (!vault || !assetAddr || !loan || typeof openLoanId !== "bigint") return;
+    setRepaying(true);
+    try {
+      // Atomic approve + repay in one sponsored UserOperation.
+      const approveData = encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [vault, loan.principal],
+      });
+      const repayData = encodeFunctionData({ abi: VAULT_ABI, functionName: "repay", args: [openLoanId] });
+      await sendCalls([
+        { to: assetAddr, data: approveData },
+        { to: vault, data: repayData },
+      ]);
+      notification.success("Loan repaid — capital returned to the pool");
+      setLoanTx(null);
+      void refetchLoan();
+      void refetchOpenLoan();
+      void refetchLiquidity();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setRepaying(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
         step={4}
         eyebrow="Working-capital loan"
-        title="Borrow against your certificate"
-        subtitle="The vault reads the certificate and pays out an undercollateralized loan. (Lending layer — demo.)"
+        title="Borrow against your attestation"
+        subtitle="The vault verifies the issuer-signed attestation onchain (recover == issuer, score ≥ minimum, unexpired) and disburses an undercollateralized loan. Gas is sponsored."
       />
-      <Panel eyebrow="Offer" title="Loan offer">
-        {eligible ? (
-          <div className="grid sm:grid-cols-3 gap-4">
-            <div>
-              <p className="k-eyebrow mb-1">Credit limit</p>
-              <p className="k-mono text-2xl font-semibold">{formatUsd(limit)}</p>
-            </div>
-            <div>
-              <p className="k-eyebrow mb-1">Origination fee</p>
-              <p className="k-mono text-2xl font-semibold">{formatUsd(fee)}</p>
-            </div>
-            <div>
-              <p className="k-eyebrow mb-1">Min score</p>
-              <p className="k-mono text-2xl font-semibold">{DEMO_VAULT.minScore}</p>
-            </div>
+
+      {!configured ? (
+        <Panel eyebrow="Onchain" title="Vault not configured">
+          <p className="text-sm text-base-content/70">
+            Deploy the vault and set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to enable onchain borrowing:
+          </p>
+          <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2 mt-2">
+            yarn deploy --file DeployKreditoVault.s.sol --network sepolia
+          </code>
+          <div className="grid sm:grid-cols-3 gap-4 mt-4">
+            <Stat label="Credit limit" value={formatUsd(limitUsd)} />
+            <Stat label="Your score" value={String(score)} />
+            <Stat label="Min score" value={String(DEMO_VAULT.minScore)} />
           </div>
-        ) : (
-          <p className="text-sm text-error">Certificate not eligible — improve the score before borrowing.</p>
-        )}
-      </Panel>
+        </Panel>
+      ) : (
+        <div className="space-y-4">
+          <Panel eyebrow="Onchain offer · Sepolia" title="Loan offer">
+            <div className="grid sm:grid-cols-4 gap-4">
+              <Stat label="Pool liquidity" value={`${formatUsd(liq)} ${sym}`} />
+              <Stat label="Your score" value={String(score)} />
+              <Stat label="Min score (onchain)" value={String(floor)} />
+              <div>
+                <p className="k-eyebrow mb-1">Eligibility</p>
+                {att ? (
+                  eligible ? (
+                    <span className="badge badge-success gap-1">
+                      <CheckCircleIcon className="h-3.5 w-3.5" /> Eligible
+                    </span>
+                  ) : (
+                    <span className="badge badge-error">Not eligible</span>
+                  )
+                ) : (
+                  <span className="badge badge-ghost">Sign first</span>
+                )}
+              </div>
+            </div>
+            {!att && (
+              <div className="rounded-field bg-warning/10 text-warning text-xs px-3 py-2 mt-3">
+                Sign your credit attestation in the Certificate step to borrow.
+              </div>
+            )}
+          </Panel>
+
+          {hasOpenLoan ? (
+            <Panel eyebrow="Active loan" title={`Loan #${String(openLoanId)}`}>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <Stat
+                  label="Principal"
+                  value={`${formatUsd(loan ? Number(formatUnits(loan.principal, dec)) : 0)} ${sym}`}
+                />
+                <Stat label="Status" value="Active" />
+              </div>
+              <button className="btn btn-outline btn-sm gap-1 mt-4" onClick={doRepay} disabled={repaying} type="button">
+                {repaying ? (
+                  <>
+                    <span className="loading loading-spinner loading-xs" /> Repaying…
+                  </>
+                ) : (
+                  <>Repay loan</>
+                )}
+              </button>
+              <p className="text-xs text-base-content/50 mt-2">
+                Repay batches approve + repay into one sponsored UserOperation.
+              </p>
+            </Panel>
+          ) : (
+            <Panel eyebrow="Draw" title="Borrow">
+              <label className="block">
+                <span className="k-eyebrow">Amount ({sym})</span>
+                <div className="mt-1 flex items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3 focus-within:border-primary transition-colors">
+                  <input
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={e => setAmount(e.target.value)}
+                    placeholder="0"
+                    className="w-full bg-transparent py-2.5 outline-none text-sm k-mono"
+                  />
+                  <button
+                    type="button"
+                    className="text-xs link shrink-0"
+                    onClick={() => setAmount(String(Math.floor(maxBorrow)))}
+                  >
+                    Max {formatUsd(maxBorrow)}
+                  </button>
+                </div>
+              </label>
+              <button
+                className="btn btn-primary btn-sm w-full gap-1 mt-3"
+                onClick={doBorrow}
+                disabled={borrowing || !att || !eligible}
+                type="button"
+              >
+                {borrowing ? (
+                  <>
+                    <span className="loading loading-spinner loading-xs" /> Borrowing onchain…
+                  </>
+                ) : (
+                  <>
+                    <BanknotesIcon className="h-4 w-4" /> Borrow {sym} (sponsored)
+                  </>
+                )}
+              </button>
+              {loanTx && (
+                <div className="mt-3 space-y-1">
+                  <div className="flex items-center gap-2 text-success text-sm font-medium">
+                    <CheckCircleIcon className="h-5 w-5" /> Disbursed {loanTx.amount} {sym}
+                  </div>
+                  <a
+                    href={sepoliaTxUrl(loanTx.hash)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="link k-mono text-xs break-all inline-flex items-center gap-1"
+                  >
+                    {loanTx.hash}
+                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
+                  </a>
+                </div>
+              )}
+            </Panel>
+          )}
+        </div>
+      )}
+
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
           <ArrowLeftIcon className="h-4 w-4" /> Back
