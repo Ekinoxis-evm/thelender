@@ -1,17 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { isConfidentialAiConfigured, runInference } from "~~/services/lendsignal/confidentialAi";
+import { isConfidentialAiConfigured } from "~~/services/lendsignal/confidentialAi";
 import { type BorrowerStrength, evaluateBureau } from "~~/services/lendsignal/creditBureau";
 import { getDemoProfile } from "~~/services/lendsignal/demoProfiles";
 import { persistCreditCheck } from "~~/services/lendsignal/persistence";
 import { runCreditPipeline } from "~~/services/lendsignal/pipeline";
-import { PROFILE_SYSTEM_PROMPT, buildProfilePrompt } from "~~/services/lendsignal/prompt";
-import {
-  applyDemoBand,
-  buildScoreResult,
-  fallbackAiResult,
-  fallbackOffchain,
-  parseProfileOutput,
-} from "~~/services/lendsignal/score";
+import { applyDemoBand, buildScoreResult, fallbackAiResult, fallbackOffchain } from "~~/services/lendsignal/score";
 import type {
   BusinessProfile,
   ConfidentialAiResult,
@@ -97,25 +90,16 @@ export async function POST(req: NextRequest) {
   let note: string | undefined;
 
   if (isConfidentialAiConfigured()) {
-    // Off-chain profile query runs in parallel with the whole map→reduce pipeline.
-    const profilePromise = runInference({
-      prompt: buildProfilePrompt(profile),
-      systemPrompt: PROFILE_SYSTEM_PROMPT,
-      documents: [],
-    }).catch(() => undefined);
-
-    const [pipe, profileSnap] = await Promise.all([runCreditPipeline(profile, documents, strength), profilePromise]);
+    const pipe = await runCreditPipeline(profile, documents, strength);
 
     ai = pipe.ai;
     attested = pipe.attested;
     inferenceId = pipe.reduceInferenceId ?? `mock-${nowSeconds}`;
     inferences = pipe.inferences;
 
-    offchain =
-      profileSnap && profileSnap.status === "completed"
-        ? parseProfileOutput(profileSnap, MODEL, strength)
-        : fallbackOffchain(strength);
-    inferences.push({ label: "Off-chain profile", inferenceId: offchain.inferenceId, attested: offchain.attested });
+    // Off-chain profile signal is MOCKED (fast, deterministic) — shown apart, not onchain.
+    offchain = fallbackOffchain(strength);
+    inferences.push({ label: "Off-chain profile (mock)", inferenceId: offchain.inferenceId, attested: false });
 
     if (!attested) {
       note = "Some Confidential AI queries did not finish in time — partial / fallback scoring was used.";

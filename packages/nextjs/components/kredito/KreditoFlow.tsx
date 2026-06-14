@@ -263,6 +263,7 @@ export const KreditoFlow = () => {
   const [docs, setDocs] = useState<Record<string, UploadedDocument | null>>({});
   const [submitting, setSubmitting] = useState(false);
   const [analyzingSteps, setAnalyzingSteps] = useState<string[]>([]);
+  const [loadedCase, setLoadedCase] = useState<"success" | "risk" | null>(null);
   const [result, setResult] = useState<StoredScore | null>(null);
 
   const set = (k: keyof typeof profile) => (v: string) => setProfile(p => ({ ...p, [k]: v }));
@@ -292,38 +293,37 @@ export const KreditoFlow = () => {
     }
   };
 
-  // Preload the sample documents dropped into public/docs into the evidence slots.
-  const loadSamples = async (silent = false) => {
+  // Load a use-case document set (success | risk) from public/docs/<case> into the slots.
+  const loadSamples = async (caseId: "success" | "risk" = "success", silent = false) => {
     try {
-      const res = await fetch("/api/lendsignal/sample-docs");
+      const res = await fetch(`/api/lendsignal/sample-docs?case=${caseId}`);
       const json = await res.json();
       const sample: UploadedDocument[] = json.documents ?? [];
       if (!sample.length) {
-        if (!silent) notification.error("No sample documents found in public/docs/.");
+        if (!silent) notification.error(`No documents found for the ${caseId} case.`);
         return;
       }
-      setDocs(prev => {
-        const next: Record<string, UploadedDocument | null> = { ...prev };
-        const taken = new Set(Object.keys(next).filter(k => next[k]));
-        for (const d of sample) {
-          let key = detectSlot(d.filename);
-          if (!key || taken.has(key)) key = SLOT_KEYS.find(k => !taken.has(k)) ?? null;
-          if (key) {
-            next[key] = d;
-            taken.add(key);
-          }
+      const next: Record<string, UploadedDocument | null> = {};
+      const taken = new Set<string>();
+      for (const d of sample) {
+        let key = detectSlot(d.filename);
+        if (!key || taken.has(key)) key = SLOT_KEYS.find(k => !taken.has(k)) ?? null;
+        if (key) {
+          next[key] = d;
+          taken.add(key);
         }
-        return next;
-      });
-      if (!silent) notification.success(`Loaded ${sample.length} sample document(s)`);
+      }
+      setDocs(next);
+      setLoadedCase(caseId);
+      if (!silent) notification.success(`Loaded the ${caseId} case (${sample.length} docs)`);
     } catch {
-      if (!silent) notification.error("Could not load sample documents.");
+      if (!silent) notification.error("Could not load documents.");
     }
   };
 
-  // Preload the mockup documents once so the full exercise is ready to run.
+  // Preload the success case once so the full happy-path exercise is ready to run.
   useEffect(() => {
-    void loadSamples(true);
+    void loadSamples("success", true);
   }, []);
 
   const runCreditCheck = async () => {
@@ -344,8 +344,13 @@ export const KreditoFlow = () => {
       };
       // Uploaded documents take the real path; otherwise the chosen demo archetype.
       const base = { profile: apiProfile, borrower: address };
+      // The loaded case tunes the (mock) bureau + off-chain signal to match it; the
+      // document-based AI score stays real (no clamp on uploads).
+      const strengthHint = loadedCase === "risk" ? "weak" : loadedCase === "success" ? "strong" : undefined;
       const body =
-        uploadedDocs.length > 0 ? { ...base, documents: uploadedDocs } : { ...base, demoProfileId: archetype };
+        uploadedDocs.length > 0
+          ? { ...base, documents: uploadedDocs, ...(strengthHint ? { strength: strengthHint } : {}) }
+          : { ...base, demoProfileId: archetype };
 
       const res = await fetch("/api/lendsignal/score", {
         method: "POST",
@@ -405,11 +410,22 @@ export const KreditoFlow = () => {
                 eyebrow="Evidence"
                 title="Upload documents"
                 action={
-                  <div className="flex items-center gap-2">
-                    <button type="button" onClick={() => loadSamples()} className="btn btn-ghost btn-xs gap-1">
-                      <ArrowUpTrayIcon className="h-3.5 w-3.5" /> Reload samples
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => loadSamples("success")}
+                      className={`btn btn-xs ${loadedCase === "success" ? "btn-primary" : "btn-ghost"}`}
+                    >
+                      Success case
                     </button>
-                    <span className="k-mono text-xs text-base-content/55">
+                    <button
+                      type="button"
+                      onClick={() => loadSamples("risk")}
+                      className={`btn btn-xs ${loadedCase === "risk" ? "btn-primary" : "btn-ghost"}`}
+                    >
+                      Risk case
+                    </button>
+                    <span className="k-mono text-xs text-base-content/55 ml-1">
                       {uploadedDocs.length}/{REQUIRED_DOCS.length}
                     </span>
                   </div>
@@ -599,6 +615,16 @@ const ScoreSection = ({
             </div>
             <div className="mt-1.5 flex items-center gap-2">
               <code className="k-mono text-sm break-all flex-1">{result.inferenceId}</code>
+              {!result.inferenceId.startsWith("mock") && (
+                <a
+                  href={`/api/lendsignal/inference/${result.inferenceId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn btn-ghost btn-xs gap-1 shrink-0"
+                >
+                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> View
+                </a>
+              )}
               <button type="button" onClick={copyId} className="btn btn-ghost btn-xs gap-1 shrink-0">
                 <DocumentDuplicateIcon className="h-3.5 w-3.5" /> Copy
               </button>
@@ -652,15 +678,30 @@ const ScoreSection = ({
       {result.inferences && result.inferences.length > 0 && (
         <Panel eyebrow={`${result.inferences.length} queries`} title="Confidential AI requests" className="mt-5">
           <div className="divide-y divide-base-300">
-            {result.inferences.map(q => (
-              <div key={q.inferenceId} className="flex items-center gap-3 py-2 text-sm">
-                <span className={`badge badge-sm shrink-0 ${q.attested ? "badge-success" : "badge-ghost"}`}>
-                  {q.attested ? "TEE" : "—"}
-                </span>
-                <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
-                <code className="k-mono text-xs text-base-content/55 truncate flex-1">{q.inferenceId}</code>
-              </div>
-            ))}
+            {result.inferences.map(q => {
+              const real = !q.inferenceId.startsWith("mock");
+              return (
+                <div key={q.inferenceId} className="flex items-center gap-3 py-2 text-sm">
+                  <span className={`badge badge-sm shrink-0 ${q.attested ? "badge-success" : "badge-ghost"}`}>
+                    {q.attested ? "TEE" : "mock"}
+                  </span>
+                  <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
+                  {real ? (
+                    <a
+                      href={`/api/lendsignal/inference/${q.inferenceId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="link k-mono text-xs truncate flex-1 inline-flex items-center gap-1"
+                    >
+                      {q.inferenceId}
+                      <ArrowTopRightOnSquareIcon className="h-3 w-3 shrink-0" />
+                    </a>
+                  ) : (
+                    <code className="k-mono text-xs text-base-content/55 truncate flex-1">{q.inferenceId}</code>
+                  )}
+                </div>
+              );
+            })}
           </div>
           <p className="mt-3 text-xs text-base-content/50">
             One attested request per document, one for the final decision, plus the off-chain profile query.
