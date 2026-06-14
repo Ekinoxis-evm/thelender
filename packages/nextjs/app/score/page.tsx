@@ -90,7 +90,7 @@ export default function ScorePage() {
               source="CRS · business credit history, normalized offchain"
               score={view.bureauScore}
               weightBps={3000}
-              accent="bg-brand-teal"
+              accent="bg-accent"
             />
           </div>
 

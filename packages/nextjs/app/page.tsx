@@ -12,14 +12,13 @@ export default function OverviewPage() {
       <section className="k-hero text-white">
         <div className="mx-auto max-w-6xl px-5 py-16 sm:py-20 grid lg:grid-cols-2 gap-12 items-center">
           <div>
-            <p className="k-eyebrow text-white/60 mb-4">Onchain credit certification · ENS-gated lending</p>
+            <p className="k-eyebrow text-white/60 mb-4">Onchain credit score · confidential AI + bureau</p>
             <h1 className="k-display text-4xl sm:text-5xl font-semibold leading-[1.05]">
-              Turn a business wallet into a <span className="text-brand-teal">credit identity</span>.
+              An <span className="text-accent">onchain credit score</span> for any business wallet.
             </h1>
             <p className="mt-5 text-white/70 text-lg leading-relaxed max-w-xl">
-              Kredito blends a Chainlink Confidential AI attestation with a credit-bureau signal into an updateable,
-              soulbound <span className="text-white">Credit Certificate</span> — then a vault uses it to issue
-              undercollateralized working-capital loans.
+              Kredito blends a Chainlink Confidential AI attestation with a credit-bureau signal into a single,
+              updateable score — issued onchain as a soulbound <span className="text-white">Credit Certificate</span>.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Link href="/onboarding" className="btn btn-primary">

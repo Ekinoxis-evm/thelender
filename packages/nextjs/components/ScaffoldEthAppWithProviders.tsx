@@ -6,7 +6,6 @@ import { SmartWalletsProvider } from "@privy-io/react-auth/smart-wallets";
 import { WagmiProvider as PrivyWagmiProvider } from "@privy-io/wagmi";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AppProgressBar as ProgressBar } from "next-nprogress-bar";
-import { useTheme } from "next-themes";
 import { Toaster } from "react-hot-toast";
 // Plain wagmi provider, used only for the SSR/no-key fallback where Privy's
 // connector (which requires PrivyProvider context) must NOT be mounted.
@@ -46,8 +45,6 @@ export const queryClient = new QueryClient({
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
 
 export const ScaffoldEthAppWithProviders = ({ children }: { children: React.ReactNode }) => {
-  const { resolvedTheme } = useTheme();
-  const isDarkMode = resolvedTheme === "dark";
   const [mounted, setMounted] = useState(false);
 
   useEffect(() => {
@@ -75,17 +72,12 @@ export const ScaffoldEthAppWithProviders = ({ children }: { children: React.Reac
   // `WagmiProvider` keeps wagmi in sync with Privy's embedded wallet (used for
   // READS / chain state). WRITES are sent as sponsored UserOps through the native
   // smart wallet via `useSmartWallets().client` (see hooks/scaffold-eth/useSmartWallet).
+  // IMPORTANT: pass the module-constant `privyConfig` directly. Building a fresh
+  // config object on every render (e.g. to sync the modal theme) gives PrivyProvider
+  // a new `config` reference each time, which re-initializes the provider and DROPS
+  // the connected wallet session. A stable reference keeps the connection context.
   return (
-    <PrivyProvider
-      appId={PRIVY_APP_ID}
-      config={{
-        ...privyConfig,
-        appearance: {
-          ...privyConfig.appearance,
-          theme: isDarkMode ? "dark" : "light",
-        },
-      }}
-    >
+    <PrivyProvider appId={PRIVY_APP_ID} config={privyConfig}>
       <SmartWalletsProvider>
         <QueryClientProvider client={queryClient}>
           <PrivyWagmiProvider config={wagmiConfig}>

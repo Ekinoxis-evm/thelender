@@ -2,7 +2,7 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
-/* Kredito design tokens — IBM Plex type system + brand palette. */
+/* Kredito design tokens — IBM Plex type system. */
 @theme {
   --font-sans: var(--font-ibm-plex-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-ibm-plex-mono), ui-monospace, SFMono-Regular, monospace;
@@ -11,7 +11,7 @@
   --shadow-center: 0 0 12px -2px rgb(0 0 0 / 0.05);
   --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 
-  /* Brand scale (also exposed as Tailwind colors: bg-brand-navy, text-brand-teal, ...) */
+  /* Brand scale → Tailwind utilities (bg-brand-navy, text-brand-teal, ...). */
   --color-brand-navy: #0e1525;
   --color-brand-navy-deep: #0b1222;
   --color-brand-blue: #1d4ed8;
@@ -89,6 +89,19 @@
   --tt-bg: var(--color-base-300);
 }
 
+/*
+ * Brand variables ALSO declared as plain custom properties so `var(--color-brand-*)`
+ * in the component primitives below always resolves — independent of how Tailwind's
+ * @theme tree-shakes unused tokens.
+ */
+:root {
+  --color-brand-navy: #0e1525;
+  --color-brand-navy-deep: #0b1222;
+  --color-brand-blue: #1d4ed8;
+  --color-brand-blue-soft: #5e7fe8;
+  --color-brand-teal: #5eead4;
+}
+
 @layer base {
   *,
   ::after,
@@ -118,7 +131,8 @@
   background: var(--color-base-200);
 }
 
-/* --- Kredito component primitives --- */
+/* --- Kredito component primitives (plain CSS — no @apply, so the whole block
+       always compiles regardless of Tailwind/daisyUI utility resolution) --- */
 
 .k-mono {
   font-family: var(--font-mono);
@@ -130,34 +144,36 @@
   letter-spacing: -0.02em;
 }
 
-/* Surface card */
 .k-card {
-  @apply bg-base-100 border border-base-300 rounded-[var(--radius-box)];
+  background-color: var(--color-base-100);
+  border: 1px solid var(--color-base-300);
+  border-radius: var(--radius-box, 1.25rem);
   box-shadow:
     0 1px 2px rgb(14 21 37 / 0.04),
     0 8px 24px -16px rgb(14 21 37 / 0.18);
 }
 
-/* Eyebrow / label */
 .k-eyebrow {
-  @apply text-xs font-medium uppercase tracking-[0.14em] text-base-content/55;
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: color-mix(in oklab, var(--color-base-content) 55%, transparent);
 }
 
-/* Hero gradient backdrop */
+/* Hero gradient backdrop (literal navy base so it never collapses to transparent) */
 .k-hero {
   background:
     radial-gradient(1200px 480px at 15% -10%, rgb(29 78 216 / 0.18), transparent 60%),
-    radial-gradient(900px 420px at 90% 0%, rgb(94 234 212 / 0.14), transparent 55%), var(--color-brand-navy-deep);
+    radial-gradient(900px 420px at 90% 0%, rgb(94 234 212 / 0.14), transparent 55%),
+    #0b1222;
+  color: #ffffff;
 }
 
 .btn {
-  @apply shadow-sm;
   border-radius: 9999rem;
   text-transform: none;
-}
-
-.btn.btn-ghost {
-  @apply shadow-none;
 }
 
 .link {
