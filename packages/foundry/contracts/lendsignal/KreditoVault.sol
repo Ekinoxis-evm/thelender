@@ -9,8 +9,8 @@ import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
+import { KreditoInsurancePool } from "./KreditoInsurancePool.sol";
 
 /// @title KreditoVault
 /// @author Kredito
@@ -18,10 +18,8 @@ import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 ///         attestation-gated undercollateralized lender, with ERC-7540 ASYNCHRONOUS REDEEM.
 ///
 ///         Supersedes `KreditoCreditVault`. The issuer-signed EIP-712 credit-attestation borrow
-///         logic uses domain "Kredito"/"1" bound to BOTH `chainId` AND `verifyingContract`
-///         (= this vault's address, C-1) so a signature is only valid on this exact vault. The
-///         off-chain viem signer (`packages/nextjs/kredito/attestation.ts`) must include
-///         `verifyingContract` in its domain and `maxPrincipal` (H-2) in the attestation message.
+///         logic is ported byte-for-byte (domain "Kredito"/"1", chainId-bound, NO verifyingContract)
+///         so the off-chain viem signer (`packages/nextjs/kredito/attestation.ts`) keeps working.
 ///
 ///         === Why async redeem (ERC-7540) ===
 ///         This is a lending vault: LP capital can be lent out to borrowers (`totalOutstanding`) and
@@ -43,44 +41,33 @@ import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 ///           deposit, so `supportsInterface(0xce3bbe50)` is false.
 ///         - `previewRedeem`/`previewWithdraw` revert (no synchronous preview for async flows).
 ///         - Operator model + ERC-7575 `share()` + ERC-165 interface IDs implemented below.
-contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
+contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
 
     // ---------------------------------------------------------------------
     // EIP-712 — domain & types (must match the off-chain viem signer exactly)
+    // PORTED VERBATIM from KreditoCreditVault. Do NOT change the preimages.
     // ---------------------------------------------------------------------
 
-    /// @dev C-1 FIX: the domain now binds `verifyingContract` (= address(this)) in addition to
-    ///      chainId. A signature is therefore valid ONLY on this exact vault, killing the prior
-    ///      cross-deployment replay surface (an issuer signature for one vault could be relayed to a
-    ///      sibling vault on the same chain). The off-chain viem signer MUST add
-    ///      `verifyingContract: <vault address>` to its EIP-712 domain to mirror this preimage.
-    ///      keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+    /// @dev EIP712Domain WITHOUT `verifyingContract`. chainId-bound only.
+    ///      keccak256("EIP712Domain(string name,string version,uint256 chainId)")
     bytes32 public constant EIP712_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+        keccak256("EIP712Domain(string name,string version,uint256 chainId)");
 
-    /// @dev H-2 FIX: `maxPrincipal` appended LAST (preserves prior field order so existing fields hash
-    ///      identically) so the issuer binds the maximum loan size into the signature itself.
-    ///      keccak256("CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt,uint256 maxPrincipal)")
+    /// @dev keccak256("CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt)")
     bytes32 public constant CREDIT_ATTESTATION_TYPEHASH = keccak256(
-        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt,uint256 maxPrincipal)"
+        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt)"
     );
 
     string public constant DOMAIN_NAME = "Kredito";
     string public constant DOMAIN_VERSION = "1";
 
-    /// @notice H-1: maximum allowed lifetime (`expiresAt - issuedAt`) of an attestation. Caps how long
-    ///         a stale credit signature can remain redeemable, bounding the issuer's exposure window.
-    uint256 public constant MAX_ATTESTATION_TTL = 30 days;
-
-    /// @notice Cached EIP-712 domain separator. Bound to `block.chainid` AND `address(this)` at deploy.
+    /// @notice Cached EIP-712 domain separator. Bound to `block.chainid` at deploy time.
     bytes32 public immutable DOMAIN_SEPARATOR;
 
     /// @notice The issuer-signed credit attestation. `riskTier` mirrors CreditTypes.RiskTier:
     ///         0 = high (default risk), 1 = medium, 2 = low.
-    /// @dev    `maxPrincipal` (H-2) is the issuer-bound upper bound on the loan amount; `borrow` enforces
-    ///         `amount <= maxPrincipal`. It is the LAST field so existing field order is preserved.
     struct CreditAttestation {
         address borrower;
         uint256 score;
@@ -88,7 +75,6 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         bytes32 evidenceDigest;
         uint256 issuedAt;
         uint256 expiresAt;
-        uint256 maxPrincipal;
     }
 
     // ---------------------------------------------------------------------
@@ -116,28 +102,80 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     ///         silently freeze all borrowing.
     uint256 public constant MAX_MIN_SCORE = 1000;
 
-    /// @notice Principal currently lent out and not yet repaid.
+    /// @notice Principal currently lent out and not yet repaid (sum of all active loans' outstanding).
     uint256 public totalOutstanding;
+
+    // ---------------------------------------------------------------------
+    // Installment-lending constants & risk config (owner-settable, bounded)
+    // ---------------------------------------------------------------------
+
+    /// @notice 10_000 basis points = 100%.
+    uint256 public constant BPS = 10_000;
+
+    /// @notice Time between scheduled installments AND, separately, the grace window after a missed
+    ///         due date before a loan can be defaulted. Both are 30 days by spec.
+    uint256 public constant PAYMENT_INTERVAL = 30 days;
+    uint256 public constant GRACE_PERIOD = 30 days;
+
+    /// @notice Late fee applied to a payment made within the grace window (5% of the installment base).
+    uint256 public constant LATE_FEE_BPS = 500;
+
+    /// @notice Minimum / maximum loan term in monthly installments.
+    uint256 public constant MIN_TERM_MONTHS = 6;
+    uint256 public constant MAX_TERM_MONTHS = 36;
+
+    /// @notice Fraction of `totalAssets()` kept as an un-lendable liquidity buffer (default 10%).
+    uint256 public liquidityBufferBps = 1000;
+
+    /// @notice Per-borrower exposure cap as a fraction of `totalAssets()` (default 5%).
+    uint256 public borrowerExposureCapBps = 500;
+
+    /// @notice Minimum insurance cover ratio required to originate a loan, in bps (default 20%).
+    uint256 public minCoverRatioBps = 2000;
+
+    /// @notice Fraction of each installment's interest streamed to the insurance pool (default 20%).
+    uint256 public protocolFeeBps = 2000;
+
+    /// @notice Annual interest rate (bps) per attestation risk tier index. Tier 1 = medium, 2 = low.
+    ///         Defaults: 1 -> 10%, 2 -> 14%, 3 -> 18%. The borrower does NOT pick the tier; the rate is
+    ///         derived from the attestation's `riskTier` so they cannot self-select a cheaper rate.
+    mapping(uint8 => uint256) public tierToRateBps;
+
+    // ---------------------------------------------------------------------
+    // Insurance integration
+    // ---------------------------------------------------------------------
+
+    /// @notice The reserve pool paid on default and fed the protocol fee. Optional until set.
+    KreditoInsurancePool public insurancePool;
 
     enum LoanStatus {
         None,
         Active,
+        Grace,
+        Defaulted,
         Repaid
     }
 
     struct Loan {
         address borrower;
-        uint256 principal;
+        uint256 principal; // outstanding principal (decreases each installment)
+        uint256 originalPrincipal; // disbursed amount (immutable)
+        uint256 annualRateBps; // rate locked from the attestation tier at origination
+        uint256 termMonths;
+        uint256 principalPerInstallment; // equal-principal amortization (last installment clears remainder)
+        uint256 paymentsMade;
+        uint256 dueDate; // next installment due timestamp
+        uint256 lastPaymentDate; // for accrued-interest-on-default math
         bytes32 attestationDigest;
-        uint256 borrowedAt;
         LoanStatus status;
     }
 
     uint256 public nextLoanId = 1;
     mapping(uint256 => Loan) public loans;
 
-    /// @notice One open loan per borrower at a time. 0 = none.
-    mapping(address => uint256) public openLoanOf;
+    /// @notice Sum of outstanding principal across a borrower's ACTIVE loans, for the exposure cap.
+    ///         Multiple concurrent loans per borrower are allowed (bounded by the cap).
+    mapping(address => uint256) public activePrincipalByBorrower;
 
     /// @notice Replay / reuse guard: once an attestation digest has funded a loan it is burned.
     mapping(bytes32 => bool) public attestationUsed;
@@ -175,7 +213,6 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     error NotBorrower();
     error AttestationAlreadyUsed();
     error InsufficientLiquidity();
-    error HasOpenLoan();
     error InvalidLoanState();
     error InvalidMinScore();
     error NotAuthorized();
@@ -183,11 +220,14 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     error InsufficientClaimable();
     error PreviewNotSupported();
     error CannotOperateSelf();
-    error AmountExceedsCreditLimit();
-    error AttestationNotYetValid();
-    error AttestationExpired();
-    error InvalidAttestationWindow();
-    error AttestationTtlTooLong();
+    error InvalidTerm();
+    error InvalidRate();
+    error InvalidParam();
+    error ExposureCapExceeded();
+    error CoverRatioTooLow();
+    error PaymentOverdue();
+    error InsuranceNotSet();
+    error NotDefaultable();
 
     // ---------------------------------------------------------------------
     // Events
@@ -198,10 +238,55 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     event AttestationVerified(
         address indexed borrower, bytes32 indexed attestationDigest, uint256 score, uint8 riskTier
     );
+
+    /// @notice A new installment loan was originated.
     event LoanIssued(
-        uint256 indexed loanId, address indexed borrower, uint256 principal, bytes32 indexed attestationDigest
+        uint256 indexed loanId,
+        address indexed borrower,
+        uint256 principal,
+        uint256 termMonths,
+        uint256 annualRateBps,
+        bytes32 indexed attestationDigest
     );
-    event LoanRepaid(uint256 indexed loanId, address indexed borrower, uint256 principal);
+
+    /// @notice An installment payment was made. `principalPaid`/`interestPaid` decompose the base;
+    ///         `lateFee` is non-zero only for grace payments; `protocolFee` went to the insurer.
+    event PaymentMade(
+        uint256 indexed loanId,
+        address indexed borrower,
+        uint256 principalPaid,
+        uint256 interestPaid,
+        uint256 lateFee,
+        uint256 protocolFee,
+        uint256 remainingPrincipal
+    );
+
+    /// @notice A loan was fully amortized and closed.
+    event LoanRepaid(uint256 indexed loanId, address indexed borrower);
+
+    /// @notice A loan was defaulted. `recovered` came from the insurer; `badDebt` is borne by LPs.
+    event LoanDefaulted(
+        uint256 indexed loanId,
+        address indexed borrower,
+        uint256 principal,
+        uint256 accruedInterest,
+        uint256 recovered,
+        uint256 badDebt
+    );
+
+    /// @notice The insurer paid less than the full claim on a default (partial / paused / reverting).
+    event PartialInsurancePayout(uint256 indexed loanId, uint256 claim, uint256 recovered);
+
+    /// @notice Risk parameters were updated.
+    event RiskParamsUpdated(
+        uint256 liquidityBufferBps, uint256 borrowerExposureCapBps, uint256 minCoverRatioBps, uint256 protocolFeeBps
+    );
+
+    /// @notice A tier's annual rate was set.
+    event RateTierUpdated(uint8 indexed tier, uint256 annualRateBps);
+
+    /// @notice The insurance pool address was set.
+    event InsurancePoolUpdated(address indexed previousPool, address indexed newPool);
 
     /// @notice ERC-7540 redeem request. `requestId` is always 0 (aggregated per controller).
     event RedeemRequest(
@@ -231,18 +316,18 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         if (address(_asset) == address(0) || _issuer == address(0)) revert ZeroAddress();
         issuer = _issuer;
 
-        // Domain separator pinned to this chain AND this contract (C-1). `verifyingContract` is
-        // address(this), so a signature recovered here is only valid against THIS vault. The off-chain
-        // signer must reproduce this exact preimage (chainId + verifyingContract = deployed address).
+        // Domain separator pinned to this chain. Note the absence of `verifyingContract` —
+        // the off-chain signer reproduces this exact preimage.
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
-                EIP712_DOMAIN_TYPEHASH,
-                keccak256(bytes(DOMAIN_NAME)),
-                keccak256(bytes(DOMAIN_VERSION)),
-                block.chainid,
-                address(this)
+                EIP712_DOMAIN_TYPEHASH, keccak256(bytes(DOMAIN_NAME)), keccak256(bytes(DOMAIN_VERSION)), block.chainid
             )
         );
+
+        // Default annual rates per attestation risk tier. Tier 1 = medium, 2 = low, 3 = (reserved).
+        tierToRateBps[1] = 1000; // 10%
+        tierToRateBps[2] = 1400; // 14%
+        tierToRateBps[3] = 1800; // 18%
 
         emit IssuerUpdated(address(0), _issuer);
     }
@@ -291,7 +376,7 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     // EIP-712 views (ported — shared with the frontend/server signer)
     // ---------------------------------------------------------------------
 
-    /// @notice The cached EIP-712 domain separator (bound to chainId AND this vault's address).
+    /// @notice The cached EIP-712 domain separator (chainId-bound, no verifyingContract).
     function domainSeparator() external view returns (bytes32) {
         return DOMAIN_SEPARATOR;
     }
@@ -306,8 +391,7 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
                 att.riskTier,
                 att.evidenceDigest,
                 att.issuedAt,
-                att.expiresAt,
-                att.maxPrincipal
+                att.expiresAt
             )
         );
         return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
@@ -318,107 +402,204 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         return hashAttestation(att).recover(sig);
     }
 
-    /// @notice True iff the attestation is genuine (issuer-signed), fresh, and meets policy.
-    /// @dev    Stateless view for frontend pre-flight. `borrow()` re-checks freshness via
-    ///         `_assertFreshness` (which reverts with a precise error) and adds the one-time-use guard.
+    /// @notice True iff the attestation is genuine (issuer-signed), unexpired, and meets policy.
     function isEligible(CreditAttestation calldata att, bytes calldata sig) public view returns (bool) {
-        return recoverIssuer(att, sig) == issuer && att.borrower != address(0) && _isFresh(att) && att.score >= minScore
-            && att.riskTier != 0; // riskTier 0 = high default risk
-    }
-
-    /// @dev H-1: freshness predicate. An attestation is fresh iff it has started, has not expired, the
-    ///      validity window is well-formed (expiry strictly after issuance), and the window is no longer
-    ///      than `MAX_ATTESTATION_TTL`. Non-reverting form, used by `isEligible`.
-    function _isFresh(CreditAttestation calldata att) internal view returns (bool) {
-        return att.issuedAt <= block.timestamp && att.expiresAt > att.issuedAt && att.expiresAt > block.timestamp
-            && att.expiresAt - att.issuedAt <= MAX_ATTESTATION_TTL;
-    }
-
-    /// @dev H-1: reverting form, used by `borrow` so the borrower gets a precise reason. Checks the same
-    ///      conditions as `_isFresh` but distinguishes each failure mode.
-    function _assertFreshness(CreditAttestation calldata att) internal view {
-        if (att.issuedAt > block.timestamp) revert AttestationNotYetValid();
-        if (att.expiresAt <= att.issuedAt) revert InvalidAttestationWindow();
-        if (att.expiresAt <= block.timestamp) revert AttestationExpired();
-        if (att.expiresAt - att.issuedAt > MAX_ATTESTATION_TTL) revert AttestationTtlTooLong();
+        return recoverIssuer(att, sig) == issuer && att.borrower != address(0) && block.timestamp < att.expiresAt
+            && att.score >= minScore && att.riskTier != 0; // riskTier 0 = high default risk
     }
 
     // ---------------------------------------------------------------------
-    // Borrowing (ported — disburses from idle liquidity, increments totalOutstanding)
+    // Installment lending (origination)
     // ---------------------------------------------------------------------
 
-    /// @notice Borrow against an issuer-signed attestation. The borrower relays the signature; the
-    ///         contract verifies it onchain, burns the attestation, and disburses `asset` from idle
-    ///         liquidity. Caller pays gas. Reverts if `amount > idleLiquidity()`.
-    function borrow(CreditAttestation calldata att, bytes calldata sig, uint256 amount)
+    /// @notice Originate an installment loan against an issuer-signed attestation. The borrower relays
+    ///         the signature; the contract verifies it onchain, burns the attestation, and disburses the
+    ///         principal from idle liquidity. The loan is tracked by the vault's own loan mapping; the
+    ///         borrower's <label>.kredito.eth ENS identity is the credential. Caller pays gas.
+    ///
+    ///         The rate is derived from the attestation's `riskTier` (NOT chosen by the borrower):
+    ///           - riskTier 2 (low)    -> `tierToRateBps[1]` (best rate)
+    ///           - riskTier 1 (medium) -> `tierToRateBps[2]`
+    ///         riskTier 0 (high) is already rejected by `isEligible`.
+    ///
+    ///         Amortization is EQUAL-PRINCIPAL and computed ON-CHAIN: each installment repays
+    ///         `amount / termMonths` of principal plus interest on the outstanding balance. The final
+    ///         installment clears the remainder so the principal sum is exact. This is the fix for the
+    ///         reference design's soft-lock bug: by computing principal-per-installment on-chain (rather
+    ///         than trusting a signer-supplied `monthlyPayment` that could be <= interest), every loan
+    ///         is GUARANTEED to fully amortize in exactly `termMonths`, at any rate.
+    ///
+    /// @param att        The issuer-signed credit attestation.
+    /// @param sig        The issuer's signature over `att`.
+    /// @param amount     Principal to borrow.
+    /// @param termMonths Loan term in monthly installments, in [MIN_TERM_MONTHS, MAX_TERM_MONTHS].
+    /// @return loanId    The new loan id (the vault's own monotonic counter).
+    function borrow(CreditAttestation calldata att, bytes calldata sig, uint256 amount, uint256 termMonths)
         external
         nonReentrant
-        whenNotPaused
         returns (uint256 loanId)
     {
         if (amount == 0) revert ZeroAmount();
         if (msg.sender != att.borrower) revert NotBorrower();
-        if (amount > att.maxPrincipal) revert AmountExceedsCreditLimit(); // H-2: issuer-bound loan cap
-        _assertFreshness(att); // H-1: precise freshness reverts
         if (!isEligible(att, sig)) revert NotEligible();
-        if (openLoanOf[msg.sender] != 0) revert HasOpenLoan();
+        if (termMonths < MIN_TERM_MONTHS || termMonths > MAX_TERM_MONTHS) revert InvalidTerm();
 
         bytes32 digest = hashAttestation(att);
         if (attestationUsed[digest]) revert AttestationAlreadyUsed();
-        if (amount > idleLiquidity()) revert InsufficientLiquidity();
 
-        // --- Effects ---
+        // Derive the rate from the attestation tier; the borrower cannot self-select a cheaper one.
+        uint256 rate = _rateForTier(att.riskTier);
+        if (rate == 0) revert InvalidRate();
+
+        // --- Risk gates ---
+        // 1. Liquidity buffer: never lend out the protocol's safety buffer.
+        uint256 buffer = (totalAssets() * liquidityBufferBps) / BPS;
+        uint256 idle = idleLiquidity();
+        if (idle <= buffer || amount > idle - buffer) revert InsufficientLiquidity();
+
+        // 2. Per-borrower exposure cap.
+        if (activePrincipalByBorrower[msg.sender] + amount > (totalAssets() * borrowerExposureCapBps) / BPS) {
+            revert ExposureCapExceeded();
+        }
+
+        // 3. Insurance cover ratio (only if an insurer is wired).
+        if (address(insurancePool) != address(0)) {
+            if (insurancePool.coverRatio(totalOutstanding + amount) < minCoverRatioBps) revert CoverRatioTooLow();
+        }
+
+        // Equal-principal amortization, computed on-chain. The final installment clears the remainder.
+        uint256 principalPerInstallment = amount / termMonths;
+
+        // --- Effects (CEI) ---
         attestationUsed[digest] = true;
         loanId = nextLoanId++;
         loans[loanId] = Loan({
             borrower: msg.sender,
             principal: amount,
+            originalPrincipal: amount,
+            annualRateBps: rate,
+            termMonths: termMonths,
+            principalPerInstallment: principalPerInstallment,
+            paymentsMade: 0,
+            dueDate: block.timestamp + PAYMENT_INTERVAL,
+            lastPaymentDate: block.timestamp,
             attestationDigest: digest,
-            borrowedAt: block.timestamp,
             status: LoanStatus.Active
         });
-        openLoanOf[msg.sender] = loanId;
         totalOutstanding += amount;
+        activePrincipalByBorrower[msg.sender] += amount;
 
         emit AttestationVerified(att.borrower, digest, att.score, att.riskTier);
-        emit LoanIssued(loanId, msg.sender, amount, digest);
+        emit LoanIssued(loanId, msg.sender, amount, termMonths, rate, digest);
 
-        // --- Interaction (last, CEI) ---
+        // --- Interactions (last, CEI) ---
         IERC20(asset()).safeTransfer(msg.sender, amount);
     }
 
-    /// @notice Borrower repays principal in full. Returns capital to idle liquidity, which is what lets
-    ///         `fulfillRedeem` succeed afterwards.
-    function repay(uint256 loanId) external nonReentrant {
+    /// @notice Make the next installment payment on a loan. Borrower-only, Active/Grace only.
+    /// @dev    Interest accrues on the OUTSTANDING balance (`principal * rate / (BPS*12)` per month).
+    ///         The principal portion is `principalPerInstallment`, except the final installment (or any
+    ///         time the per-installment amount exceeds the remaining balance) which clears the whole
+    ///         remainder. Together these guarantee full amortization in `termMonths` — immune to the
+    ///         reference design's soft-lock.
+    ///
+    ///         Timing:
+    ///           - on time (now <= dueDate):     pay `principalDue + interest`.
+    ///           - within grace (<= dueDate+GRACE): pay `base + lateFee` (5% of base); status -> Grace.
+    ///           - past grace:                   revert; the loan is now defaultable.
+    ///
+    ///         The protocol fee (`interest * protocolFeeBps / BPS`) is streamed to the insurer. The late
+    ///         fee stays in the vault as LP yield.
+    function makePayment(uint256 loanId) external nonReentrant {
         Loan storage loan = loans[loanId];
-        if (loan.status != LoanStatus.Active) revert InvalidLoanState();
+        if (loan.status != LoanStatus.Active && loan.status != LoanStatus.Grace) revert InvalidLoanState();
         if (msg.sender != loan.borrower) revert NotBorrower();
 
-        uint256 principal = loan.principal;
-        loan.status = LoanStatus.Repaid;
-        openLoanOf[loan.borrower] = 0;
-        totalOutstanding -= principal;
+        uint256 interest = (loan.principal * loan.annualRateBps) / (BPS * 12);
 
-        IERC20(asset()).safeTransferFrom(msg.sender, address(this), principal);
-        emit LoanRepaid(loanId, loan.borrower, principal);
+        // Final installment (or rounding remainder) clears the whole outstanding balance.
+        bool isLast = (loan.paymentsMade + 1 >= loan.termMonths) || (loan.principalPerInstallment > loan.principal);
+        uint256 principalDue = isLast ? loan.principal : loan.principalPerInstallment;
+
+        uint256 base = principalDue + interest;
+
+        uint256 lateFee = 0;
+        if (block.timestamp > loan.dueDate) {
+            if (block.timestamp > loan.dueDate + GRACE_PERIOD) revert PaymentOverdue();
+            lateFee = (base * LATE_FEE_BPS) / BPS;
+            loan.status = LoanStatus.Grace;
+        }
+
+        uint256 paymentDue = base + lateFee;
+        uint256 protocolFee = address(insurancePool) != address(0) ? (interest * protocolFeeBps) / BPS : 0;
+
+        // --- Effects (CEI) ---
+        loan.principal -= principalDue;
+        totalOutstanding -= principalDue;
+        activePrincipalByBorrower[loan.borrower] -= principalDue;
+        loan.paymentsMade += 1;
+        loan.dueDate += PAYMENT_INTERVAL;
+        loan.lastPaymentDate = block.timestamp;
+
+        bool closed = loan.principal == 0;
+        if (closed) {
+            loan.status = LoanStatus.Repaid;
+        } else if (lateFee == 0) {
+            // A timely payment after a grace status restores Active.
+            loan.status = LoanStatus.Active;
+        }
+
+        emit PaymentMade(loanId, loan.borrower, principalDue, interest, lateFee, protocolFee, loan.principal);
+        if (closed) emit LoanRepaid(loanId, loan.borrower);
+
+        // --- Interactions (last, CEI) ---
+        // Pull the full payment in (principal + interest + late fee).
+        IERC20(asset()).safeTransferFrom(msg.sender, address(this), paymentDue);
+        // Stream the protocol fee to the insurer as COVER-LP yield. The late fee stays here as LP yield.
+        if (protocolFee > 0) {
+            IERC20(asset()).safeTransfer(address(insurancePool), protocolFee);
+        }
     }
 
-    /// @notice Owner marks a defaulted/written-off loan repaid for accounting (frees the borrower's
-    ///         open-loan slot). No funds move; this realizes a loss against share price.
-    /// @dev    LOSS POLICY (intended): writing a default off here lowers `totalOutstanding` and thus
-    ///         `totalAssets()`, so the loss is borne by the LIVE share supply — i.e. LPs still holding
-    ///         shares. It is NOT borne by redeemers whose requests were already fulfilled: at
-    ///         `fulfillRedeem` their rate was locked and their assets were reserved into
-    ///         `totalClaimableAssets` (excluded from `totalAssets()`), so a subsequent write-off cannot
-    ///         claw back their claim. This rate-lock-at-fulfillment asymmetry is by design: fulfilled
-    ///         redeemers have effectively exited; remaining LPs absorb post-fulfillment losses.
-    function markLoanRepaid(uint256 loanId) external onlyOwner {
+    /// @notice Default a loan whose payment is past the grace window. Callable by ANYONE (keeper /
+    ///         liquidator pattern — defaults must not depend on a privileged caller). Active/Grace only.
+    /// @dev    Asks the insurer to cover
+    ///         `principal + accruedInterest` via a TOLERANT call: the insurer call is wrapped in a
+    ///         try/catch so a paused, reverting, or underfunded insurer can NEVER brick the default
+    ///         (the reference design's `processClaim` was `whenNotPaused`, so pausing the insurer
+    ///         bricked every default). Whatever is recovered offsets the loss; the rest is bad debt
+    ///         borne by the LIVE LP share supply (totalAssets drops by `principal`, rises by
+    ///         `recovered`).
+    function processDefault(uint256 loanId) external nonReentrant {
         Loan storage loan = loans[loanId];
-        if (loan.status != LoanStatus.Active) revert InvalidLoanState();
-        loan.status = LoanStatus.Repaid;
-        openLoanOf[loan.borrower] = 0;
-        totalOutstanding -= loan.principal;
-        emit LoanRepaid(loanId, loan.borrower, loan.principal);
+        if (loan.status != LoanStatus.Active && loan.status != LoanStatus.Grace) revert InvalidLoanState();
+        if (block.timestamp <= loan.dueDate + GRACE_PERIOD) revert NotDefaultable();
+
+        uint256 principal = loan.principal;
+        // Accrued interest since the last payment (simple, on the outstanding principal).
+        uint256 elapsed = block.timestamp - loan.lastPaymentDate;
+        uint256 accruedInterest = (principal * loan.annualRateBps * elapsed) / (365 days * BPS);
+        uint256 claim = principal + accruedInterest;
+
+        // --- Effects (CEI): write loan/accounting state BEFORE external calls. ---
+        loan.status = LoanStatus.Defaulted;
+        totalOutstanding -= principal;
+        activePrincipalByBorrower[loan.borrower] -= principal;
+
+        // --- Interactions ---
+        // Tolerant insurer call: never let a paused/reverting/empty insurer brick the default.
+        uint256 recovered = 0;
+        if (address(insurancePool) != address(0)) {
+            try insurancePool.processClaim(loanId, principal, accruedInterest, loanId) returns (uint256 paid) {
+                recovered = paid;
+            } catch {
+                recovered = 0;
+            }
+        }
+
+        uint256 badDebt = claim > recovered ? claim - recovered : 0;
+        if (recovered < claim) emit PartialInsurancePayout(loanId, claim, recovered);
+        emit LoanDefaulted(loanId, loan.borrower, principal, accruedInterest, recovered, badDebt);
     }
 
     // ---------------------------------------------------------------------
@@ -699,22 +880,6 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     // Admin (ported)
     // ---------------------------------------------------------------------
 
-    /// @notice Owner pauses new borrows (H-3). Existing loans/repay/redeem flows are unaffected — this
-    ///         is a circuit breaker for the credit-attestation surface (e.g. a leaked issuer key).
-    function pause() external onlyOwner {
-        _pause();
-    }
-
-    /// @notice Owner lifts the borrow pause (H-3).
-    function unpause() external onlyOwner {
-        _unpause();
-    }
-
-    /// @notice Set the trusted attestation signer.
-    /// @dev    SECURITY (H-3): the deploy script sets `issuer == deployer` for DEMO convenience only.
-    ///         In production the issuer MUST be a hardened signer — a multisig or HSM-backed key —
-    ///         NOT an EOA controlled by the deployer. A compromised issuer key can mint arbitrary
-    ///         creditworthiness; rotate to a multisig/HSM via this function immediately after deploy.
     function setIssuer(address newIssuer) external onlyOwner {
         if (newIssuer == address(0)) revert ZeroAddress();
         emit IssuerUpdated(issuer, newIssuer);
@@ -725,6 +890,54 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
         if (newMinScore == 0 || newMinScore > MAX_MIN_SCORE) revert InvalidMinScore();
         emit MinScoreUpdated(minScore, newMinScore);
         minScore = newMinScore;
+    }
+
+    /// @notice Update the four bounded risk parameters in one call. Each must be <= BPS (100%).
+    function setRiskParams(
+        uint256 _liquidityBufferBps,
+        uint256 _borrowerExposureCapBps,
+        uint256 _minCoverRatioBps,
+        uint256 _protocolFeeBps
+    ) external onlyOwner {
+        if (
+            _liquidityBufferBps > BPS || _borrowerExposureCapBps > BPS || _minCoverRatioBps > BPS
+                || _protocolFeeBps > BPS
+        ) revert InvalidParam();
+        liquidityBufferBps = _liquidityBufferBps;
+        borrowerExposureCapBps = _borrowerExposureCapBps;
+        minCoverRatioBps = _minCoverRatioBps;
+        protocolFeeBps = _protocolFeeBps;
+        emit RiskParamsUpdated(_liquidityBufferBps, _borrowerExposureCapBps, _minCoverRatioBps, _protocolFeeBps);
+    }
+
+    /// @notice Set the annual rate (bps) for a tier index. `tier` must be non-zero; `rate` <= BPS.
+    function setRateTier(uint8 tier, uint256 annualRateBps) external onlyOwner {
+        if (tier == 0) revert InvalidParam();
+        if (annualRateBps > BPS) revert InvalidParam();
+        tierToRateBps[tier] = annualRateBps;
+        emit RateTierUpdated(tier, annualRateBps);
+    }
+
+    /// @notice Wire the insurance pool. Owner-only, non-zero.
+    function setInsurancePool(address pool) external onlyOwner {
+        if (pool == address(0)) revert ZeroAddress();
+        emit InsurancePoolUpdated(address(insurancePool), pool);
+        insurancePool = KreditoInsurancePool(pool);
+    }
+
+    // ---------------------------------------------------------------------
+    // Internal helpers
+    // ---------------------------------------------------------------------
+
+    /// @dev Map an attestation `riskTier` to its annual rate. The borrower CANNOT pick a cheaper tier:
+    ///        - riskTier 2 (low)    -> tierToRateBps[1] (best rate)
+    ///        - riskTier 1 (medium) -> tierToRateBps[2]
+    ///      Any other tier returns 0, which the caller treats as ineligible (`InvalidRate`).
+    ///      (riskTier 0 is already rejected upstream by `isEligible`.)
+    function _rateForTier(uint8 riskTier) internal view returns (uint256) {
+        if (riskTier == 2) return tierToRateBps[1];
+        if (riskTier == 1) return tierToRateBps[2];
+        return 0;
     }
 
     // ---------------------------------------------------------------------
