@@ -21,7 +21,7 @@ export async function persistCreditCheck(args: {
   try {
     const supabase = createAdminClient();
     const { error } = await supabase.from("credit_checks").insert({
-      borrower: borrower ?? null,
+      borrower: borrower?.toLowerCase() ?? null,
       inference_id: result.inferenceId,
       model: result.model,
       attested: result.attested,

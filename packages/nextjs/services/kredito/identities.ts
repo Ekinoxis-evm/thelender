@@ -3,26 +3,35 @@ import type { CreditStatus, EnsIdentity, Profile } from "~~/lib/kredito";
 import { createAdminClient } from "~~/services/supabase/admin";
 
 /**
- * Server-only data access for KreditoOne. Uses the service-role client (bypasses RLS) because the
- * app authenticates with Privy, not Supabase Auth. The private credit SCORE lives in
- * `credit_decisions` and is NEVER returned to the client by these helpers.
+ * Server-only data access for Kreditos. Uses the service-role client (bypasses RLS) because the
+ * app authenticates with Privy, not Supabase Auth. The private credit score lives in the
+ * `credit_checks` table (written by the Confidential-AI score pipeline) and is NEVER returned to
+ * the client by these helpers — only the eligibility decision + attestation hash leave the server.
  */
 
 export type CreditDecision = {
-  wallet_address: string;
-  status: CreditStatus;
-  attestation_hash: string | null;
-  // combined_score is intentionally NOT selected here — it must never reach the client.
+  borrower: string;
+  status: CreditStatus; // derived from credit_checks.eligible
+  attestation_hash: string | null; // the Chainlink attestation = the ENS "financial ID"
 };
 
+/** Latest credit decision for a wallet, read from the score pipeline's `credit_checks` table. */
 export async function getDecision(wallet: string): Promise<CreditDecision | null> {
   const db = createAdminClient();
   const { data } = await db
-    .from("credit_decisions")
-    .select("wallet_address, status, attestation_hash")
-    .eq("wallet_address", wallet.toLowerCase())
+    .from("credit_checks")
+    .select("borrower, eligible, attestation_hash")
+    .eq("borrower", wallet.toLowerCase())
+    .order("created_at", { ascending: false })
+    .limit(1)
     .maybeSingle();
-  return (data as CreditDecision) ?? null;
+  if (!data) return null;
+  const row = data as { borrower: string; eligible: boolean | null; attestation_hash: string | null };
+  return {
+    borrower: row.borrower,
+    status: row.eligible ? "approved" : "denied",
+    attestation_hash: row.attestation_hash,
+  };
 }
 
 export async function getIdentityByWallet(wallet: string): Promise<EnsIdentity | null> {
@@ -74,36 +83,4 @@ export async function updateProfile(label: string, wallet: string, fields: Profi
     .single();
   if (error) throw new Error(error.message);
   return data as EnsIdentity;
-}
-
-/** Upsert a CRE decision. The combined_score is PRIVATE and only stored here (never returned). */
-export async function upsertDecision(d: {
-  wallet_address: string;
-  status: CreditStatus;
-  combined_score?: number | null;
-  confidential_ai_score?: number | null;
-  bureau_score?: number | null;
-  risk_tier?: "low" | "medium" | "high" | null;
-  attestation_hash?: string | null;
-  bureau_report_hash?: string | null;
-  evidence_digest?: string | null;
-  expires_at?: string | null;
-}): Promise<void> {
-  const db = createAdminClient();
-  const { error } = await db
-    .from("credit_decisions")
-    .upsert({ ...d, wallet_address: d.wallet_address.toLowerCase() }, { onConflict: "wallet_address" });
-  if (error) throw new Error(error.message);
-}
-
-/** Mirror a status change onto an existing issued identity (if any). */
-export async function updateIdentityStatus(wallet: string, status: CreditStatus): Promise<EnsIdentity | null> {
-  const db = createAdminClient();
-  const { data } = await db
-    .from("ens_identities")
-    .update({ status })
-    .eq("wallet_address", wallet.toLowerCase())
-    .select("*")
-    .maybeSingle();
-  return (data as EnsIdentity) ?? null;
 }
