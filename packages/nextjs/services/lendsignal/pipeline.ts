@@ -8,15 +8,7 @@
  */
 import { runInference } from "./confidentialAi";
 import type { BorrowerStrength } from "./creditBureau";
-import {
-  REDUCE_SYSTEM_PROMPT,
-  SECTION_FOCUS,
-  SECTION_SYSTEM_PROMPT,
-  type SectionSummary,
-  buildReducePrompt,
-  buildSectionPrompt,
-  detectSection,
-} from "./prompt";
+import { SECTION_FOCUS, type SectionSummary, buildReducePrompt, buildSectionPrompt, detectSection } from "./prompt";
 import { parseReduceOutput, parseSectionOutput, placeholderSection } from "./score";
 import type { BusinessProfile, ConfidentialAiResult, DocumentAnalysis, InferenceRef, UploadedDocument } from "./types";
 
@@ -27,10 +19,14 @@ export type CreditPipelineResult = {
   reduceInferenceId?: string;
 };
 
+/** Admin-managed AI config the pipeline runs with (model + the section/reduce system prompts). */
+export type PipelineAi = { model: string; sectionSystemPrompt: string; reduceSystemPrompt: string };
+
 export async function runCreditPipeline(
   profile: BusinessProfile,
   documents: UploadedDocument[],
   strength: BorrowerStrength,
+  aiCfg: PipelineAi,
 ): Promise<CreditPipelineResult> {
   // --- MAP: one inference per document, in parallel ---
   const sectionResults = await Promise.all(
@@ -42,8 +38,9 @@ export async function runCreditPipeline(
         const snap = await runInference(
           {
             prompt: buildSectionPrompt(section, profile, doc.filename),
-            systemPrompt: SECTION_SYSTEM_PROMPT,
+            systemPrompt: aiCfg.sectionSystemPrompt,
             documents: [doc],
+            model: aiCfg.model,
           },
           { maxAttempts: 90 },
         );
@@ -81,8 +78,9 @@ export async function runCreditPipeline(
   try {
     reduceSnap = await runInference({
       prompt: buildReducePrompt(profile, summaries),
-      systemPrompt: REDUCE_SYSTEM_PROMPT,
+      systemPrompt: aiCfg.reduceSystemPrompt,
       documents: [],
+      model: aiCfg.model,
     });
   } catch {
     reduceSnap = undefined;

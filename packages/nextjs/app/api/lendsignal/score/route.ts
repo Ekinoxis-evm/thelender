@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { getAiConfig } from "~~/services/kredito/admin";
 import { isConfidentialAiConfigured } from "~~/services/lendsignal/confidentialAi";
 import { type BorrowerStrength, evaluateBureau } from "~~/services/lendsignal/creditBureau";
 import { getDemoProfile } from "~~/services/lendsignal/demoProfiles";
@@ -27,8 +28,6 @@ import type {
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300;
-
-const MODEL = process.env.CHAINLINK_CONFIDENTIAL_AI_MODEL ?? "gemma4";
 
 type RequestBody = {
   profile: BusinessProfile;
@@ -81,6 +80,9 @@ export async function POST(req: NextRequest) {
   const documentsBase64 = documents.map(d => d.contentBase64);
   const nowSeconds = Math.floor(Date.now() / 1000);
 
+  // Admin-managed model + system prompts (Supabase ai_config; falls back to code defaults).
+  const cfg = await getAiConfig();
+
   // --- Step 1: the pipeline (per-section + reduce) + the off-chain query ---
   let ai: ConfidentialAiResult;
   let attested = false;
@@ -90,7 +92,11 @@ export async function POST(req: NextRequest) {
   let note: string | undefined;
 
   if (isConfidentialAiConfigured()) {
-    const pipe = await runCreditPipeline(profile, documents, strength);
+    const pipe = await runCreditPipeline(profile, documents, strength, {
+      model: cfg.model,
+      sectionSystemPrompt: cfg.section_system_prompt,
+      reduceSystemPrompt: cfg.reduce_system_prompt,
+    });
 
     ai = pipe.ai;
     attested = pipe.attested;
@@ -120,7 +126,7 @@ export async function POST(req: NextRequest) {
   // --- Step 3: combine 70/30 → onchain-ready ScoreInputs (+ off-chain signal + query ids) ---
   const result = buildScoreResult({
     inferenceId,
-    model: MODEL,
+    model: cfg.model,
     attested,
     ai,
     bureau,

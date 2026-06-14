@@ -31,28 +31,32 @@ const defaults = (): AiConfig => ({
   profile_system_prompt: PROFILE_SYSTEM_PROMPT,
 });
 
-/** The active AI config — Supabase row if present, else the in-code defaults. */
+/** The active AI config — Supabase row if present, else the in-code defaults. Never throws. */
 export async function getAiConfig(): Promise<AiConfig & { source: "supabase" | "defaults" }> {
-  const db = createAdminClient();
-  const { data } = await db
-    .from("ai_config")
-    .select("*")
-    .eq("active", true)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
   const d = defaults();
-  if (!data) return { ...d, source: "defaults" };
-  return {
-    model: data.model ?? d.model,
-    credit_system_prompt: data.credit_system_prompt ?? d.credit_system_prompt,
-    section_system_prompt: data.section_system_prompt ?? d.section_system_prompt,
-    reduce_system_prompt: data.reduce_system_prompt ?? d.reduce_system_prompt,
-    profile_system_prompt: data.profile_system_prompt ?? d.profile_system_prompt,
-    notes: data.notes,
-    updated_at: data.updated_at,
-    source: "supabase",
-  };
+  try {
+    const db = createAdminClient();
+    const { data } = await db
+      .from("ai_config")
+      .select("*")
+      .eq("active", true)
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    if (!data) return { ...d, source: "defaults" };
+    return {
+      model: data.model ?? d.model,
+      credit_system_prompt: data.credit_system_prompt ?? d.credit_system_prompt,
+      section_system_prompt: data.section_system_prompt ?? d.section_system_prompt,
+      reduce_system_prompt: data.reduce_system_prompt ?? d.reduce_system_prompt,
+      profile_system_prompt: data.profile_system_prompt ?? d.profile_system_prompt,
+      notes: data.notes,
+      updated_at: data.updated_at,
+      source: "supabase",
+    };
+  } catch {
+    return { ...d, source: "defaults" };
+  }
 }
 
 /** Save a new active AI config (deactivates the previous one, keeping history for review). */
