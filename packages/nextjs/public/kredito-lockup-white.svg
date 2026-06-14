@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 420 128" width="420" height="128">
+  <defs><linearGradient id="bg" x1="22" y1="16" x2="106" y2="112" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#2F5FE4"/><stop offset="1" stop-color="#102A60"/></linearGradient></defs>
+  <rect x="12" y="12" width="104" height="104" rx="28" fill="url(#bg)"/>
+  <g fill="none" stroke="#FFFFFF" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"><path d="M54 38 L54 90"/><path d="M59 64 L90 40"/><path d="M59 64 L91 88"/></g>
+  <circle cx="54" cy="64" r="8" fill="#5CEAD6"/>
+  <text x="152" y="74" font-family="Georgia, 'Times New Roman', serif" font-size="28" fill="#FFFFFF">Kredito</text>
+</svg>

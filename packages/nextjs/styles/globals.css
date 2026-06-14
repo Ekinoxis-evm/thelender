@@ -2,92 +2,105 @@
 
 @custom-variant dark (&:where([data-theme=dark], [data-theme=dark] *));
 
+/* Kredito design tokens — IBM Plex type system + brand palette. */
 @theme {
+  --font-sans: var(--font-ibm-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-ibm-plex-mono), ui-monospace, SFMono-Regular, monospace;
+  --font-serif: var(--font-ibm-plex-serif), ui-serif, Georgia, serif;
+
   --shadow-center: 0 0 12px -2px rgb(0 0 0 / 0.05);
   --animate-pulse-fast: pulse 1s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+
+  /* Brand scale (also exposed as Tailwind colors: bg-brand-navy, text-brand-teal, ...) */
+  --color-brand-navy: #0e1525;
+  --color-brand-navy-deep: #0b1222;
+  --color-brand-blue: #1d4ed8;
+  --color-brand-blue-soft: #5e7fe8;
+  --color-brand-teal: #5eead4;
+  --color-brand-green: #0f9d58;
+  --color-brand-amber: #d97706;
+  --color-brand-red: #dc2626;
 }
 
 @plugin "daisyui" {
   themes:
-    light,
+    light --default,
     dark --prefersdark;
 }
 
+/* Kredito — light */
 @plugin "daisyui/theme" {
   name: "light";
 
-  --color-primary: #93bbfb;
-  --color-primary-content: #212638;
-  --color-secondary: #dae8ff;
-  --color-secondary-content: #212638;
-  --color-accent: #93bbfb;
-  --color-accent-content: #212638;
-  --color-neutral: #212638;
+  --color-primary: #1d4ed8;
+  --color-primary-content: #ffffff;
+  --color-secondary: #0e1525;
+  --color-secondary-content: #ffffff;
+  --color-accent: #5eead4;
+  --color-accent-content: #0e1525;
+  --color-neutral: #0e1525;
   --color-neutral-content: #ffffff;
   --color-base-100: #ffffff;
-  --color-base-200: #f4f8ff;
-  --color-base-300: #dae8ff;
-  --color-base-content: #212638;
-  --color-info: #93bbfb;
-  --color-success: #34eeb6;
-  --color-warning: #ffcf72;
-  --color-error: #ff8863;
+  --color-base-200: #f1f3f7;
+  --color-base-300: #e1e5ec;
+  --color-base-content: #0e1525;
+  --color-info: #1d4ed8;
+  --color-success: #0f9d58;
+  --color-success-content: #ffffff;
+  --color-warning: #d97706;
+  --color-warning-content: #ffffff;
+  --color-error: #dc2626;
+  --color-error-content: #ffffff;
 
-  --radius-field: 1rem;
-  --radius-box: 1rem;
+  --radius-selector: 0.75rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1.25rem;
   --tt-tailw: 6px;
 }
 
+/* Kredito — dark (navy) */
 @plugin "daisyui/theme" {
   name: "dark";
 
-  --color-primary: #212638;
-  --color-primary-content: #f9fbff;
-  --color-secondary: #323f61;
-  --color-secondary-content: #f9fbff;
-  --color-accent: #4969a6;
-  --color-accent-content: #f9fbff;
-  --color-neutral: #f9fbff;
-  --color-neutral-content: #385183;
-  --color-base-100: #385183;
-  --color-base-200: #2a3655;
-  --color-base-300: #212638;
-  --color-base-content: #f9fbff;
-  --color-info: #385183;
-  --color-success: #34eeb6;
-  --color-warning: #ffcf72;
-  --color-error: #ff8863;
+  --color-primary: #5e7fe8;
+  --color-primary-content: #0b1222;
+  --color-secondary: #5eead4;
+  --color-secondary-content: #0b1222;
+  --color-accent: #5eead4;
+  --color-accent-content: #0b1222;
+  --color-neutral: #e6e9ef;
+  --color-neutral-content: #0b1222;
+  --color-base-100: #0e1525;
+  --color-base-200: #0b1222;
+  --color-base-300: #1c2438;
+  --color-base-content: #e6e9ef;
+  --color-info: #5e7fe8;
+  --color-success: #2fbd7e;
+  --color-success-content: #04130c;
+  --color-warning: #f0a23a;
+  --color-warning-content: #1a0f00;
+  --color-error: #f0676a;
+  --color-error-content: #1a0405;
 
-  --radius-field: 1rem;
-  --radius-box: 1rem;
-
+  --radius-selector: 0.75rem;
+  --radius-field: 0.75rem;
+  --radius-box: 1.25rem;
   --tt-tailw: 6px;
-  --tt-bg: var(--color-primary);
+  --tt-bg: var(--color-base-300);
 }
 
-/*
-  The default border color has changed to `currentColor` in Tailwind CSS v4,
-  so we've added these compatibility styles to make sure everything still
-  looks the same as it did with Tailwind CSS v3.
-
-  If we ever want to remove these styles, we need to add an explicit border
-  color utility to any element that depends on these defaults.
-*/
 @layer base {
   *,
   ::after,
   ::before,
   ::backdrop,
   ::file-selector-button {
-    border-color: var(--color-gray-200, currentColor);
-  }
-
-  p {
-    margin: 1rem 0;
+    border-color: var(--color-base-300, currentColor);
   }
 
   body {
     min-height: 100vh;
+    font-family: var(--font-sans);
   }
 
   h1,
@@ -95,7 +108,8 @@
   h3,
   h4 {
     margin-bottom: 0.5rem;
-    line-height: 1;
+    line-height: 1.1;
+    letter-spacing: -0.01em;
   }
 }
 
@@ -104,9 +118,42 @@
   background: var(--color-base-200);
 }
 
+/* --- Kredito component primitives --- */
+
+.k-mono {
+  font-family: var(--font-mono);
+  font-feature-settings: "tnum" 1;
+}
+
+.k-display {
+  font-family: var(--font-serif);
+  letter-spacing: -0.02em;
+}
+
+/* Surface card */
+.k-card {
+  @apply bg-base-100 border border-base-300 rounded-[var(--radius-box)];
+  box-shadow:
+    0 1px 2px rgb(14 21 37 / 0.04),
+    0 8px 24px -16px rgb(14 21 37 / 0.18);
+}
+
+/* Eyebrow / label */
+.k-eyebrow {
+  @apply text-xs font-medium uppercase tracking-[0.14em] text-base-content/55;
+}
+
+/* Hero gradient backdrop */
+.k-hero {
+  background:
+    radial-gradient(1200px 480px at 15% -10%, rgb(29 78 216 / 0.18), transparent 60%),
+    radial-gradient(900px 420px at 90% 0%, rgb(94 234 212 / 0.14), transparent 55%), var(--color-brand-navy-deep);
+}
+
 .btn {
-  @apply shadow-md;
+  @apply shadow-sm;
   border-radius: 9999rem;
+  text-transform: none;
 }
 
 .btn.btn-ghost {
@@ -120,4 +167,3 @@
 .link:hover {
   opacity: 80%;
 }
-  
