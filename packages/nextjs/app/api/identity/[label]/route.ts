@@ -1,7 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { type Hex, createPublicClient, http, isAddress } from "viem";
 import { sepolia } from "viem/chains";
-import { type ProfileInput, editMessage, normalizeLabel, sanitizeProfile } from "~~/lib/kredito";
+import {
+  EDIT_TTL_MS,
+  type ProfileInput,
+  editMessage,
+  normalizeLabel,
+  profileDigest,
+  sanitizeProfile,
+} from "~~/lib/kredito";
 import { getIdentityByLabel, updateProfile } from "~~/services/kredito/identities";
 
 export const runtime = "nodejs";
@@ -44,18 +51,21 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ la
     return NextResponse.json({ error: "Invalid label" }, { status: 400 });
   }
 
-  let body: { wallet?: string; profile?: ProfileInput; signature?: Hex };
+  let body: { wallet?: string; profile?: ProfileInput; signature?: Hex; issuedAt?: number };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
-  const { wallet, profile, signature } = body;
+  const { wallet, profile, signature, issuedAt } = body;
   if (!wallet || !isAddress(wallet)) {
     return NextResponse.json({ error: "Valid wallet required" }, { status: 400 });
   }
   if (!signature) {
     return NextResponse.json({ error: "Signature required" }, { status: 401 });
+  }
+  if (typeof issuedAt !== "number" || Math.abs(Date.now() - issuedAt) > EDIT_TTL_MS) {
+    return NextResponse.json({ error: "Stale or missing issuedAt" }, { status: 401 });
   }
 
   const identity = await getIdentityByLabel(label);
@@ -66,10 +76,16 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ la
     return NextResponse.json({ error: "Not the owner of this identity" }, { status: 403 });
   }
 
+  // Verify the signature commits to THIS exact profile content + timestamp (content-bound + TTL'd → replay-proof).
+  const clean = sanitizeProfile(profile);
   const reader = createPublicClient({ chain: sepolia, transport: http(sepoliaRpc()) });
   let proven = false;
   try {
-    proven = await reader.verifyMessage({ address: wallet, message: editMessage(wallet, label), signature });
+    proven = await reader.verifyMessage({
+      address: wallet,
+      message: editMessage(wallet, label, profileDigest(clean), issuedAt),
+      signature,
+    });
   } catch {
     proven = false;
   }
@@ -77,6 +93,6 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ la
     return NextResponse.json({ error: "Signature does not prove control of the wallet" }, { status: 401 });
   }
 
-  const updated = await updateProfile(label, wallet, sanitizeProfile(profile));
+  const updated = await updateProfile(label, wallet, clean);
   return NextResponse.json({ identity: updated });
 }

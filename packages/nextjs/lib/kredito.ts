@@ -1,4 +1,4 @@
-import { type Hex } from "viem";
+import { type Hex, keccak256, stringToHex } from "viem";
 import { namehash, normalize } from "viem/ens";
 
 /**
@@ -58,8 +58,16 @@ export function labelToNode(label: string): Hex {
 export const mintMessage = (wallet: string, normalizedLabel: string) =>
   `KreditoOne — claim credit identity\nname: ${normalizedLabel}.${KREDITO_PARENT_NAME}\nwallet: ${wallet}`;
 
-export const editMessage = (wallet: string, normalizedLabel: string) =>
-  `KreditoOne — edit profile\nname: ${normalizedLabel}.${KREDITO_PARENT_NAME}\nwallet: ${wallet}`;
+/**
+ * Edit-profile challenge. Binds the wallet, the label, a digest of the exact profile content, AND a
+ * timestamp — so a captured signature can't be replayed to set DIFFERENT content (content-bound) and
+ * is only valid briefly (TTL enforced server-side). See profileDigest().
+ */
+export const editMessage = (wallet: string, normalizedLabel: string, profileDigest: string, issuedAt: number) =>
+  `KreditoOne — edit profile\nname: ${normalizedLabel}.${KREDITO_PARENT_NAME}\nwallet: ${wallet}\nprofile: ${profileDigest}\nissued: ${issuedAt}`;
+
+/** Max age (ms) a signed edit challenge is accepted for. */
+export const EDIT_TTL_MS = 5 * 60 * 1000;
 
 export const isHttpUrl = (u?: string | null): u is string => !!u && /^https?:\/\//i.test(u);
 const HANDLE_RE = /^[A-Za-z0-9_.-]{1,39}$/;
@@ -137,6 +145,12 @@ export function ensTextRecords(p: Profile): { keys: string[]; values: string[] }
     }
   }
   return { keys, values };
+}
+
+/** Deterministic digest of a sanitized profile — what the edit signature commits to (replay-proofing). */
+export function profileDigest(p: Profile): Hex {
+  const canonical = PROFILE_FIELDS.map(f => `${f.ensKey}=${p[f.col] ?? ""}`).join("\n");
+  return keccak256(stringToHex(canonical));
 }
 
 /** A safe external link for a social/contact field (for the card). Null if unsupported/invalid. */

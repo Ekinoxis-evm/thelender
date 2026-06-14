@@ -14,6 +14,7 @@ import {
   labelToNode,
   mintMessage,
   normalizeLabel,
+  profileDigest,
   sanitizeProfile,
   socialUrl,
 } from "~~/lib/kredito";
@@ -207,12 +208,15 @@ export default function IdentityPage() {
           });
         }
       }
-      // Mirror to Supabase for fast card rendering (owner-authenticated).
-      const signature = await signMessageAsync({ message: editMessage(address, id.label) });
+      // Mirror to Supabase for fast card rendering (owner-authenticated, content-bound + TTL'd).
+      const issuedAt = Date.now();
+      const signature = await signMessageAsync({
+        message: editMessage(address, id.label, profileDigest(clean), issuedAt),
+      });
       const r = await fetch(`/api/identity/${id.label}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet: address, profile: form, signature }),
+        body: JSON.stringify({ wallet: address, profile: form, issuedAt, signature }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? "Save failed");
