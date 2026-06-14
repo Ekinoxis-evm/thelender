@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Address as AddressDisplay } from "@scaffold-ui/components";
 import {
   ArrowLeftIcon,
@@ -46,6 +46,16 @@ const BAND_BADGE: Record<string, string> = {
   low: "badge-success",
   medium: "badge-warning",
   high: "badge-error",
+};
+const DECISION_BADGE: Record<string, string> = {
+  approved: "badge-success",
+  manual_review: "badge-warning",
+  denied: "badge-error",
+};
+const DECISION_LABEL: Record<string, string> = {
+  approved: "Approved",
+  manual_review: "Manual review",
+  denied: "Denied",
 };
 
 const fileToBase64 = (file: File) =>
@@ -158,6 +168,88 @@ const DocSlot = ({
   </div>
 );
 
+const SLOT_KEYS = REQUIRED_DOCS.map(d => d.key) as readonly string[];
+
+/** Map a filename to one of the evidence slots (mirrors the server's detectSection). */
+const detectSlot = (filename: string): string | null => {
+  const f = filename.toLowerCase();
+  if (/(income|financ|p&l|profit|balance|cash.?flow)/.test(f)) return "financials";
+  if (/tax/.test(f)) return "tax";
+  if (/bank|statement/.test(f)) return "bank";
+  if (/(a\/?r|receivable|aging)/.test(f)) return "ar";
+  if (/debt|loan|liab/.test(f)) return "debt";
+  if (/legal|article|license|formation|incorp|ein/.test(f)) return "legal";
+  return null;
+};
+
+/** Animated multi-step loader shown while the map→reduce pipeline runs. */
+const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
+  const [done, setDone] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
+  useEffect(() => {
+    setDone(0);
+    setElapsed(0);
+    const stepTimer = setInterval(() => setDone(d => Math.min(d + 1, steps.length - 1)), 12000);
+    const clock = setInterval(() => setElapsed(e => e + 1), 1000);
+    return () => {
+      clearInterval(stepTimer);
+      clearInterval(clock);
+    };
+  }, [steps.length]);
+
+  const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+  const onLast = done >= steps.length - 1;
+
+  return (
+    <div className="k-card p-6 max-w-2xl mx-auto">
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-3">
+          <span className="loading loading-spinner loading-md text-primary" />
+          <p className="font-semibold">Running confidential analysis…</p>
+        </div>
+        <span className="k-mono text-sm text-base-content/60 tabular-nums">{mmss}</span>
+      </div>
+      <p className="text-xs text-base-content/55 mb-5">
+        Each document is analyzed one by one in the Chainlink TEE, then reduced to a decision. PDFs go through Docling
+        preprocessing, so this can take ~2–3 minutes — keep this tab open.
+      </p>
+      <ul className="space-y-2.5">
+        {steps.map((s, i) => {
+          const isLastStep = i === steps.length - 1;
+          // The final step keeps spinning (with the elapsed clock) until the server responds.
+          const isDone = i < done && !(isLastStep && onLast);
+          const isCurrent = i === done || (isLastStep && onLast);
+          return (
+            <li key={s} className="flex items-center gap-3 text-sm">
+              <span
+                className={`grid place-items-center h-5 w-5 rounded-full shrink-0 ${
+                  isDone ? "bg-success text-success-content" : isCurrent ? "bg-primary/15" : "bg-base-300"
+                }`}
+              >
+                {isDone ? (
+                  <CheckIcon className="h-3 w-3" />
+                ) : isCurrent ? (
+                  <span className="loading loading-spinner loading-xs" />
+                ) : (
+                  i + 1
+                )}
+              </span>
+              <span className={isDone ? "text-base-content/60" : isCurrent ? "font-medium" : "text-base-content/45"}>
+                {s}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+      {onLast && (
+        <p className="mt-4 text-xs text-base-content/50">
+          Finalizing the verdict — almost there. Large PDFs can push this past 2 minutes.
+        </p>
+      )}
+    </div>
+  );
+};
+
 // ---------------------------------------------------------------- the flow
 
 export const KreditoFlow = () => {
@@ -170,6 +262,8 @@ export const KreditoFlow = () => {
   const [archetype, setArchetype] = useState<string>("strong");
   const [docs, setDocs] = useState<Record<string, UploadedDocument | null>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [analyzingSteps, setAnalyzingSteps] = useState<string[]>([]);
+  const [loadedCase, setLoadedCase] = useState<"success" | "risk" | null>(null);
   const [result, setResult] = useState<StoredScore | null>(null);
 
   const set = (k: keyof typeof profile) => (v: string) => setProfile(p => ({ ...p, [k]: v }));
@@ -199,8 +293,47 @@ export const KreditoFlow = () => {
     }
   };
 
+  // Load a use-case document set (success | risk) from public/docs/<case> into the slots.
+  const loadSamples = async (caseId: "success" | "risk" = "success", silent = false) => {
+    try {
+      const res = await fetch(`/api/lendsignal/sample-docs?case=${caseId}`);
+      const json = await res.json();
+      const sample: UploadedDocument[] = json.documents ?? [];
+      if (!sample.length) {
+        if (!silent) notification.error(`No documents found for the ${caseId} case.`);
+        return;
+      }
+      const next: Record<string, UploadedDocument | null> = {};
+      const taken = new Set<string>();
+      for (const d of sample) {
+        let key = detectSlot(d.filename);
+        if (!key || taken.has(key)) key = SLOT_KEYS.find(k => !taken.has(k)) ?? null;
+        if (key) {
+          next[key] = d;
+          taken.add(key);
+        }
+      }
+      setDocs(next);
+      setLoadedCase(caseId);
+      if (!silent) notification.success(`Loaded the ${caseId} case (${sample.length} docs)`);
+    } catch {
+      if (!silent) notification.error("Could not load documents.");
+    }
+  };
+
+  // Preload the success case once so the full happy-path exercise is ready to run.
+  useEffect(() => {
+    void loadSamples("success", true);
+  }, []);
+
   const runCreditCheck = async () => {
     setSubmitting(true);
+    const steps =
+      uploadedDocs.length > 0
+        ? uploadedDocs.map(d => `Analyze ${d.filename}`)
+        : REQUIRED_DOCS.map(d => `Analyze ${d.label}`);
+    steps.push("Reduce to a final decision", "Off-chain profile analysis");
+    setAnalyzingSteps(steps);
     try {
       const apiProfile = {
         legalName: profile.legalName,
@@ -211,8 +344,13 @@ export const KreditoFlow = () => {
       };
       // Uploaded documents take the real path; otherwise the chosen demo archetype.
       const base = { profile: apiProfile, borrower: address };
+      // The loaded case tunes the (mock) bureau + off-chain signal to match it; the
+      // document-based AI score stays real (no clamp on uploads).
+      const strengthHint = loadedCase === "risk" ? "weak" : loadedCase === "success" ? "strong" : undefined;
       const body =
-        uploadedDocs.length > 0 ? { ...base, documents: uploadedDocs } : { ...base, demoProfileId: archetype };
+        uploadedDocs.length > 0
+          ? { ...base, documents: uploadedDocs, ...(strengthHint ? { strength: strengthHint } : {}) }
+          : { ...base, demoProfileId: archetype };
 
       const res = await fetch("/api/lendsignal/score", {
         method: "POST",
@@ -246,7 +384,8 @@ export const KreditoFlow = () => {
             title="Become a credit identity"
             subtitle="Submit your business profile and upload each piece of evidence. The connected wallet becomes the onchain identifier used by the certificate and the lending vault."
           />
-          <div className="grid lg:grid-cols-3 gap-5">
+          {submitting && <AnalyzingProgress steps={analyzingSteps} />}
+          <div className={submitting ? "hidden" : "grid lg:grid-cols-3 gap-5"}>
             <div className="lg:col-span-2 space-y-5">
               <Panel eyebrow="Business profile" title="Company information">
                 <div className="grid sm:grid-cols-2 gap-4">
@@ -271,9 +410,25 @@ export const KreditoFlow = () => {
                 eyebrow="Evidence"
                 title="Upload documents"
                 action={
-                  <span className="k-mono text-xs text-base-content/55">
-                    {uploadedDocs.length}/{REQUIRED_DOCS.length}
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => loadSamples("success")}
+                      className={`btn btn-xs ${loadedCase === "success" ? "btn-primary" : "btn-ghost"}`}
+                    >
+                      Success case
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => loadSamples("risk")}
+                      className={`btn btn-xs ${loadedCase === "risk" ? "btn-primary" : "btn-ghost"}`}
+                    >
+                      Risk case
+                    </button>
+                    <span className="k-mono text-xs text-base-content/55 ml-1">
+                      {uploadedDocs.length}/{REQUIRED_DOCS.length}
+                    </span>
+                  </div>
                 }
               >
                 <div className="grid sm:grid-cols-2 gap-2.5">
@@ -353,7 +508,7 @@ export const KreditoFlow = () => {
               <p className="text-center text-xs text-base-content/45 -mt-2">Attested in the Chainlink TEE · ~10–40s</p>
             </div>
           </div>
-          <RecentChecks borrower={address} />
+          {!submitting && <RecentChecks borrower={address} />}
         </>
       )}
 
@@ -460,6 +615,16 @@ const ScoreSection = ({
             </div>
             <div className="mt-1.5 flex items-center gap-2">
               <code className="k-mono text-sm break-all flex-1">{result.inferenceId}</code>
+              {!result.inferenceId.startsWith("mock") && (
+                <a
+                  href={`/inference/${result.inferenceId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="btn btn-ghost btn-xs gap-1 shrink-0"
+                >
+                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> View
+                </a>
+              )}
               <button type="button" onClick={copyId} className="btn btn-ghost btn-xs gap-1 shrink-0">
                 <DocumentDuplicateIcon className="h-3.5 w-3.5" /> Copy
               </button>
@@ -477,7 +642,15 @@ const ScoreSection = ({
         </Panel>
 
         <div className="space-y-5">
-          <Panel eyebrow="Evidence anchors" title="Onchain hashes">
+          <Panel
+            eyebrow="Evidence anchors"
+            title="Onchain-ready digests"
+            action={<span className="badge badge-ghost badge-sm">not issued yet</span>}
+          >
+            <p className="text-xs text-base-content/55 mb-3">
+              These three digests (the certificate&apos;s <code>ScoreInputs</code>) are written onchain when you issue
+              the certificate. Raw evidence stays offchain.
+            </p>
             <div className="space-y-2.5">
               <div>
                 <p className="k-eyebrow mb-1">Attestation</p>
@@ -492,6 +665,17 @@ const ScoreSection = ({
                 <HashChip value={result.scoreInputs.evidenceDigest} />
               </div>
             </div>
+            {!result.inferenceId.startsWith("mock") && (
+              <a
+                href={`/inference/${result.inferenceId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="link text-xs inline-flex items-center gap-1 mt-3"
+              >
+                Verify the Chainlink attestation
+                <ArrowTopRightOnSquareIcon className="h-3 w-3" />
+              </a>
+            )}
           </Panel>
           <Panel
             eyebrow="Policy"
@@ -509,20 +693,82 @@ const ScoreSection = ({
         </div>
       </div>
 
-      {/* Per-document analysis — each uploaded file analyzed one by one */}
+      {/* All Confidential AI queries that ran (per-section + reduce + off-chain) */}
+      {result.inferences && result.inferences.length > 0 && (
+        <Panel eyebrow={`${result.inferences.length} queries`} title="Confidential AI requests" className="mt-5">
+          <div className="divide-y divide-base-300">
+            {result.inferences.map(q => {
+              const real = !q.inferenceId.startsWith("mock");
+              return (
+                <div key={q.inferenceId} className="flex items-center gap-3 py-2 text-sm">
+                  <span className={`badge badge-sm shrink-0 ${q.attested ? "badge-success" : "badge-ghost"}`}>
+                    {q.attested ? "TEE" : "mock"}
+                  </span>
+                  <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
+                  {real ? (
+                    <a
+                      href={`/inference/${q.inferenceId}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="link k-mono text-xs truncate flex-1 inline-flex items-center gap-1"
+                    >
+                      {q.inferenceId}
+                      <ArrowTopRightOnSquareIcon className="h-3 w-3 shrink-0" />
+                    </a>
+                  ) : (
+                    <code className="k-mono text-xs text-base-content/55 truncate flex-1">{q.inferenceId}</code>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <p className="mt-3 text-xs text-base-content/50">
+            One attested request per document, one for the final decision, plus the off-chain profile query.
+          </p>
+        </Panel>
+      )}
+
+      {/* Per-document analysis (map) → final decision (reduce) */}
       {result.confidentialAi.document_analysis.length > 0 && (
-        <Panel eyebrow="Per document" title="Document analysis" className="mt-5">
+        <Panel
+          eyebrow={`Per document · ${result.confidentialAi.document_analysis.length} analyzed`}
+          title="Document analysis"
+          className="mt-5"
+          action={
+            <span className={`badge ${DECISION_BADGE[result.confidentialAi.decision]}`}>
+              {DECISION_LABEL[result.confidentialAi.decision]}
+            </span>
+          }
+        >
           <div className="divide-y divide-base-300">
             {result.confidentialAi.document_analysis.map((d, i) => (
-              <div key={`${d.filename}-${i}`} className="flex items-start gap-3 py-2.5 text-sm">
-                <span className={`badge badge-sm shrink-0 mt-0.5 ${SIGNAL_BADGE[d.signal]}`}>{d.signal}</span>
-                <div className="min-w-0">
-                  <p className="font-medium truncate">{d.filename}</p>
-                  <p className="text-base-content/70">{d.finding}</p>
+              <div key={`${d.filename}-${i}`} className="py-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`badge badge-sm ${SIGNAL_BADGE[d.signal]}`}>{d.signal}</span>
+                  <span className="font-medium text-sm">{d.documentType}</span>
+                  <code className="k-mono text-xs text-base-content/45">{d.filename}</code>
+                  {!d.reliable && <span className="badge badge-error badge-sm">unreliable</span>}
+                </div>
+                <p className="text-sm text-base-content/70 mt-1">{d.finding}</p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-xs text-base-content/55">
+                  <span className="flex items-center gap-1">
+                    authenticity{" "}
+                    <span className={`badge badge-xs ${BAND_BADGE[d.authenticity]}`}>{d.authenticity}</span>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    consistency <span className={`badge badge-xs ${BAND_BADGE[d.consistency]}`}>{d.consistency}</span>
+                  </span>
+                  <span className={d.reliable ? "text-success" : "text-error"}>
+                    {d.reliable ? "✓ reliable" : "✕ not reliable"}
+                  </span>
                 </div>
               </div>
             ))}
           </div>
+          <p className="mt-3 text-xs text-base-content/50">
+            Each document is checked for authenticity + consistency, then the{" "}
+            {result.confidentialAi.document_analysis.length} summaries are reduced into the final decision above.
+          </p>
         </Panel>
       )}
 

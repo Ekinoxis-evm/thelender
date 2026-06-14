@@ -40,9 +40,25 @@ export type UploadedDocument = {
 
 export type DocumentSignal = "positive" | "neutral" | "negative";
 
-/** Per-document finding — the model analyzes each uploaded file one by one. */
+/** Final underwriting decision over the full document set. */
+export type CreditDecision = "approved" | "manual_review" | "denied";
+
+/**
+ * Per-document structured analysis — the model assesses EACH file one by one and
+ * decides whether it is reliable and truthful (authenticity + consistency), then
+ * these 6 summaries are reduced into the final decision.
+ */
 export type DocumentAnalysis = {
   filename: string;
+  documentType: string;
+  /** Was the document provided and readable. */
+  present: boolean;
+  /** Looks like a genuine document. */
+  authenticity: RiskBand;
+  /** Internal/cross-document consistency (veracity). */
+  consistency: RiskBand;
+  /** Overall: trustworthy enough to underwrite on. */
+  reliable: boolean;
   finding: string;
   signal: DocumentSignal;
 };
@@ -57,6 +73,8 @@ export type ConfidentialAiResult = {
   /** 0..1000 creditworthiness. */
   creditworthiness_score: number;
   risk_tier: RiskTier;
+  /** Final underwriting decision reduced from the per-document analysis. */
+  decision: CreditDecision;
   /** Per-document breakdown (one entry per attached file). */
   document_analysis: DocumentAnalysis[];
   reasoning_summary: string;
@@ -112,6 +130,13 @@ export type ScoreInputs = {
   expiresAt: number;
 };
 
+/** One Confidential AI query in the pipeline (a section, the reduce, or the profile). */
+export type InferenceRef = {
+  label: string;
+  inferenceId: string;
+  attested: boolean;
+};
+
 /** Full response of POST /api/lendsignal/score — everything the UI renders. */
 export type ScoreResult = {
   /** Confidential AI request id (the on-record proof of the inference). */
@@ -135,4 +160,6 @@ export type ScoreResult = {
   usage?: { prompt_tokens: number; completion_tokens: number };
   /** Second query: off-chain profile/industry signal (shown apart; not onchain). */
   offchain?: OffchainProfileSignal;
+  /** Every Confidential AI query that ran (per-section + reduce + profile), with ids. */
+  inferences?: InferenceRef[];
 };
