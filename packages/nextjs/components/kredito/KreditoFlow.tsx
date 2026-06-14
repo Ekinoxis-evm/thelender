@@ -2,12 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { Address as AddressDisplay } from "@scaffold-ui/components";
-import { recoverTypedDataAddress } from "viem";
+import { encodeFunctionData, formatUnits, parseUnits, recoverTypedDataAddress } from "viem";
+import { useReadContract } from "wagmi";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
   ArrowTopRightOnSquareIcon,
   ArrowUpTrayIcon,
+  BanknotesIcon,
   CheckCircleIcon,
   CheckIcon,
   DocumentDuplicateIcon,
@@ -18,14 +20,23 @@ import {
 import { CertificateCard, HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
 import { useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
-import { type CreditAttestation, typedData } from "~~/kredito/attestation";
+import { toTypedMessage, typedData } from "~~/kredito/attestation";
 import { RESOLVER_ABI, buildSetTextCalls, getResolver, namehash, normalize } from "~~/kredito/ens";
 import { formatUsd } from "~~/kredito/format";
 import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
 import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
 import { useKreditoWallet } from "~~/kredito/useWallet";
+import {
+  ERC20_ABI,
+  KREDITO_VAULT_ADDRESS,
+  type SignedAttestation,
+  VAULT_ABI,
+  VAULT_CHAIN_ID,
+  type VaultLoan,
+  sepoliaTxUrl,
+} from "~~/kredito/vault";
 import type { UploadedDocument } from "~~/services/lendsignal/types";
-import { notification } from "~~/utils/scaffold-eth";
+import { getParsedError, notification } from "~~/utils/scaffold-eth";
 
 const STEPS = ["Onboarding", "Score", "Certificate", "Borrow", "Liquidity"] as const;
 
@@ -270,6 +281,8 @@ export const KreditoFlow = () => {
   const [analyzingSteps, setAnalyzingSteps] = useState<string[]>([]);
   const [loadedCase, setLoadedCase] = useState<"success" | "risk" | null>(null);
   const [result, setResult] = useState<StoredScore | null>(null);
+  // The issuer-signed attestation, produced in the Certificate step and consumed by Borrow.
+  const [att, setAtt] = useState<SignedAttestation | null>(null);
 
   const set = (k: keyof typeof profile) => (v: string) => setProfile(p => ({ ...p, [k]: v }));
   const uploadedDocs = Object.values(docs).filter(Boolean) as UploadedDocument[];
@@ -526,13 +539,23 @@ export const KreditoFlow = () => {
           result={result}
           borrower={(address ?? ZERO_ADDR) as `0x${string}`}
           ensName={profile.ensName ?? ""}
+          att={att}
+          setAtt={setAtt}
           onBack={() => setStep(1)}
           onNext={() => advance(3)}
         />
       )}
 
-      {/* STEP 4 — BORROW (demo) */}
-      {step === 3 && <BorrowSection result={result} onBack={() => setStep(2)} onNext={() => advance(4)} />}
+      {/* STEP 4 — BORROW (onchain) */}
+      {step === 3 && (
+        <BorrowSection
+          result={result}
+          borrower={(address ?? ZERO_ADDR) as `0x${string}`}
+          att={att}
+          onBack={() => setStep(2)}
+          onNext={() => advance(4)}
+        />
+      )}
 
       {/* STEP 5 — LIQUIDITY (demo) */}
       {step === 4 && <LiquiditySection onBack={() => setStep(3)} />}
@@ -834,24 +857,38 @@ const CertificateSection = ({
   result,
   borrower,
   ensName,
+  att,
+  setAtt,
   onBack,
   onNext,
 }: {
   result: StoredScore;
   borrower: `0x${string}`;
   ensName: string;
+  att: SignedAttestation | null;
+  setAtt: (a: SignedAttestation | null) => void;
   onBack: () => void;
   onNext: () => void;
 }) => {
   const cert = toCertificate(result, borrower);
   const [signing, setSigning] = useState(false);
-  const [att, setAtt] = useState<{
-    attestation: CreditAttestation;
-    signature: `0x${string}`;
-    issuer: `0x${string}`;
-    digest: `0x${string}`;
-  } | null>(null);
   const [verified, setVerified] = useState<boolean | null>(null);
+
+  // Verify the signature exactly as the vault does onchain (recover signer == issuer).
+  // Recompute whenever `att` changes, so returning to this step keeps the verified badge.
+  useEffect(() => {
+    if (!att) {
+      setVerified(null);
+      return;
+    }
+    let cancelled = false;
+    recoverTypedDataAddress({ ...typedData(att.attestation), signature: att.signature })
+      .then(r => !cancelled && setVerified(r.toLowerCase() === att.issuer.toLowerCase()))
+      .catch(() => !cancelled && setVerified(false));
+    return () => {
+      cancelled = true;
+    };
+  }, [att]);
 
   const { writeContractSponsored } = useSponsoredWrite();
   const [publishing, setPublishing] = useState(false);
@@ -916,14 +953,7 @@ const CertificateSection = ({
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.message || json?.error || "Signing failed");
-      setAtt(json);
-      // Verify client-side exactly as the vault does onchain: recover the EIP-712 signer.
-      try {
-        const recovered = await recoverTypedDataAddress({ ...typedData(json.attestation), signature: json.signature });
-        setVerified(recovered.toLowerCase() === String(json.issuer).toLowerCase());
-      } catch {
-        setVerified(false);
-      }
+      setAtt(json as SignedAttestation);
       notification.success("Attestation signed by the protocol issuer");
     } catch (e) {
       notification.error(e instanceof Error ? e.message : "Signing failed");
@@ -1081,46 +1111,307 @@ const CertificateSection = ({
   );
 };
 
+const Stat = ({ label, value }: { label: string; value: string }) => (
+  <div>
+    <p className="k-eyebrow mb-1">{label}</p>
+    <p className="k-mono text-2xl font-semibold">{value}</p>
+  </div>
+);
+
 const BorrowSection = ({
   result,
+  borrower,
+  att,
   onBack,
   onNext,
 }: {
   result: StoredScore | null;
+  borrower: `0x${string}`;
+  att: SignedAttestation | null;
   onBack: () => void;
   onNext: () => void;
 }) => {
-  const eligible = result?.eligible ?? false;
-  const limit = result?.bureau.recommendedCreditLimitUsd ?? DEMO_VAULT.liquidityUsd;
-  const fee = Math.round((limit * DEMO_VAULT.originationFeeBps) / 10_000);
+  const configured = KREDITO_VAULT_ADDRESS.length > 0;
+  const vault = configured ? (KREDITO_VAULT_ADDRESS as `0x${string}`) : undefined;
+  const { writeContractSponsored, sendCalls } = useSponsoredWrite();
+
+  // --- Onchain reads (Sepolia). Disabled until the vault address is configured. ---
+  const { data: liquidity, refetch: refetchLiquidity } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "liquidity",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured },
+  });
+  const { data: minScoreData } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "minScore",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured },
+  });
+  const { data: assetAddr } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "asset",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured },
+  });
+  const { data: openLoanId, refetch: refetchOpenLoan } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "openLoanOf",
+    args: [borrower],
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured && borrower !== ZERO_ADDR },
+  });
+  const { data: decimalsData } = useReadContract({
+    address: assetAddr,
+    abi: ERC20_ABI,
+    functionName: "decimals",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: !!assetAddr },
+  });
+  const { data: symbolData } = useReadContract({
+    address: assetAddr,
+    abi: ERC20_ABI,
+    functionName: "symbol",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: !!assetAddr },
+  });
+  const hasOpenLoan = typeof openLoanId === "bigint" && openLoanId !== 0n;
+  const { data: loanData, refetch: refetchLoan } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "getLoan",
+    args: hasOpenLoan ? [openLoanId] : undefined,
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured && hasOpenLoan },
+  });
+
+  const dec = typeof decimalsData === "number" ? decimalsData : 6;
+  const sym = typeof symbolData === "string" ? symbolData : "mUSDC";
+  const liq = typeof liquidity === "bigint" ? Number(formatUnits(liquidity, dec)) : 0;
+  const floor = typeof minScoreData === "bigint" ? Number(minScoreData) : DEMO_VAULT.minScore;
+  const loan = loanData as VaultLoan | undefined;
+
+  const score = att?.attestation.score ?? result?.combinedScore ?? 0;
+  const limitUsd = result?.bureau.recommendedCreditLimitUsd ?? DEMO_VAULT.liquidityUsd;
+  // Demo: 1 token unit (mUSDC) == $1, so borrowable = min(credit limit, pool liquidity).
+  const maxBorrow = Math.max(0, Math.min(limitUsd, liq || limitUsd));
+
+  const [amount, setAmount] = useState("");
+  const [borrowing, setBorrowing] = useState(false);
+  const [repaying, setRepaying] = useState(false);
+  const [loanTx, setLoanTx] = useState<{ hash: string; amount: string } | null>(null);
+  // Expiry uses Date.now() (impure at render) → evaluate it in an effect.
+  const [expired, setExpired] = useState(false);
+
+  useEffect(() => {
+    if (maxBorrow > 0) setAmount(a => a || String(Math.floor(maxBorrow)));
+  }, [maxBorrow]);
+
+  useEffect(() => {
+    setExpired(!!att && att.attestation.expiresAt <= Math.floor(Date.now() / 1000));
+  }, [att]);
+
+  // Mirrors the vault's isEligible (the contract is the real gate; this drives the UI).
+  const eligible = !!att && att.attestation.score >= floor && att.attestation.riskTier !== 0 && !expired;
+
+  const doBorrow = async () => {
+    if (!vault || !att) {
+      notification.error("Sign your credit attestation in the Certificate step first.");
+      return;
+    }
+    let amt: bigint;
+    try {
+      amt = parseUnits((amount || "0").replace(/,/g, ""), dec);
+    } catch {
+      notification.error("Invalid amount.");
+      return;
+    }
+    if (amt <= 0n) {
+      notification.error("Enter an amount to borrow.");
+      return;
+    }
+    setBorrowing(true);
+    try {
+      const hash = await writeContractSponsored({
+        address: vault,
+        abi: VAULT_ABI,
+        functionName: "borrow",
+        args: [toTypedMessage(att.attestation), att.signature, amt],
+      });
+      setLoanTx({ hash, amount });
+      notification.success("Loan disbursed onchain (gas-sponsored)");
+      void refetchLiquidity();
+      void refetchOpenLoan();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBorrowing(false);
+    }
+  };
+
+  const doRepay = async () => {
+    if (!vault || !assetAddr || !loan || typeof openLoanId !== "bigint") return;
+    setRepaying(true);
+    try {
+      // Atomic approve + repay in one sponsored UserOperation.
+      const approveData = encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [vault, loan.principal],
+      });
+      const repayData = encodeFunctionData({ abi: VAULT_ABI, functionName: "repay", args: [openLoanId] });
+      await sendCalls([
+        { to: assetAddr, data: approveData },
+        { to: vault, data: repayData },
+      ]);
+      notification.success("Loan repaid — capital returned to the pool");
+      setLoanTx(null);
+      void refetchLoan();
+      void refetchOpenLoan();
+      void refetchLiquidity();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setRepaying(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
         step={4}
         eyebrow="Working-capital loan"
-        title="Borrow against your certificate"
-        subtitle="The vault reads the certificate and pays out an undercollateralized loan. (Lending layer — demo.)"
+        title="Borrow against your attestation"
+        subtitle="The vault verifies the issuer-signed attestation onchain (recover == issuer, score ≥ minimum, unexpired) and disburses an undercollateralized loan. Gas is sponsored."
       />
-      <Panel eyebrow="Offer" title="Loan offer">
-        {eligible ? (
-          <div className="grid sm:grid-cols-3 gap-4">
-            <div>
-              <p className="k-eyebrow mb-1">Credit limit</p>
-              <p className="k-mono text-2xl font-semibold">{formatUsd(limit)}</p>
-            </div>
-            <div>
-              <p className="k-eyebrow mb-1">Origination fee</p>
-              <p className="k-mono text-2xl font-semibold">{formatUsd(fee)}</p>
-            </div>
-            <div>
-              <p className="k-eyebrow mb-1">Min score</p>
-              <p className="k-mono text-2xl font-semibold">{DEMO_VAULT.minScore}</p>
-            </div>
+
+      {!configured ? (
+        <Panel eyebrow="Onchain" title="Vault not configured">
+          <p className="text-sm text-base-content/70">
+            Deploy the vault and set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to enable onchain borrowing:
+          </p>
+          <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2 mt-2">
+            yarn deploy --file DeployKreditoVault.s.sol --network sepolia
+          </code>
+          <div className="grid sm:grid-cols-3 gap-4 mt-4">
+            <Stat label="Credit limit" value={formatUsd(limitUsd)} />
+            <Stat label="Your score" value={String(score)} />
+            <Stat label="Min score" value={String(DEMO_VAULT.minScore)} />
           </div>
-        ) : (
-          <p className="text-sm text-error">Certificate not eligible — improve the score before borrowing.</p>
-        )}
-      </Panel>
+        </Panel>
+      ) : (
+        <div className="space-y-4">
+          <Panel eyebrow="Onchain offer · Sepolia" title="Loan offer">
+            <div className="grid sm:grid-cols-4 gap-4">
+              <Stat label="Pool liquidity" value={`${formatUsd(liq)} ${sym}`} />
+              <Stat label="Your score" value={String(score)} />
+              <Stat label="Min score (onchain)" value={String(floor)} />
+              <div>
+                <p className="k-eyebrow mb-1">Eligibility</p>
+                {att ? (
+                  eligible ? (
+                    <span className="badge badge-success gap-1">
+                      <CheckCircleIcon className="h-3.5 w-3.5" /> Eligible
+                    </span>
+                  ) : (
+                    <span className="badge badge-error">Not eligible</span>
+                  )
+                ) : (
+                  <span className="badge badge-ghost">Sign first</span>
+                )}
+              </div>
+            </div>
+            {!att && (
+              <div className="rounded-field bg-warning/10 text-warning text-xs px-3 py-2 mt-3">
+                Sign your credit attestation in the Certificate step to borrow.
+              </div>
+            )}
+          </Panel>
+
+          {hasOpenLoan ? (
+            <Panel eyebrow="Active loan" title={`Loan #${String(openLoanId)}`}>
+              <div className="grid sm:grid-cols-2 gap-4">
+                <Stat
+                  label="Principal"
+                  value={`${formatUsd(loan ? Number(formatUnits(loan.principal, dec)) : 0)} ${sym}`}
+                />
+                <Stat label="Status" value="Active" />
+              </div>
+              <button className="btn btn-outline btn-sm gap-1 mt-4" onClick={doRepay} disabled={repaying} type="button">
+                {repaying ? (
+                  <>
+                    <span className="loading loading-spinner loading-xs" /> Repaying…
+                  </>
+                ) : (
+                  <>Repay loan</>
+                )}
+              </button>
+              <p className="text-xs text-base-content/50 mt-2">
+                Repay batches approve + repay into one sponsored UserOperation.
+              </p>
+            </Panel>
+          ) : (
+            <Panel eyebrow="Draw" title="Borrow">
+              <label className="block">
+                <span className="k-eyebrow">Amount ({sym})</span>
+                <div className="mt-1 flex items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3 focus-within:border-primary transition-colors">
+                  <input
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={e => setAmount(e.target.value)}
+                    placeholder="0"
+                    className="w-full bg-transparent py-2.5 outline-none text-sm k-mono"
+                  />
+                  <button
+                    type="button"
+                    className="text-xs link shrink-0"
+                    onClick={() => setAmount(String(Math.floor(maxBorrow)))}
+                  >
+                    Max {formatUsd(maxBorrow)}
+                  </button>
+                </div>
+              </label>
+              <button
+                className="btn btn-primary btn-sm w-full gap-1 mt-3"
+                onClick={doBorrow}
+                disabled={borrowing || !att || !eligible}
+                type="button"
+              >
+                {borrowing ? (
+                  <>
+                    <span className="loading loading-spinner loading-xs" /> Borrowing onchain…
+                  </>
+                ) : (
+                  <>
+                    <BanknotesIcon className="h-4 w-4" /> Borrow {sym} (sponsored)
+                  </>
+                )}
+              </button>
+              {loanTx && (
+                <div className="mt-3 space-y-1">
+                  <div className="flex items-center gap-2 text-success text-sm font-medium">
+                    <CheckCircleIcon className="h-5 w-5" /> Disbursed {loanTx.amount} {sym}
+                  </div>
+                  <a
+                    href={sepoliaTxUrl(loanTx.hash)}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="link k-mono text-xs break-all inline-flex items-center gap-1"
+                  >
+                    {loanTx.hash}
+                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
+                  </a>
+                </div>
+              )}
+            </Panel>
+          )}
+        </div>
+      )}
+
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
           <ArrowLeftIcon className="h-4 w-4" /> Back
