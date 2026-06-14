@@ -19,7 +19,19 @@ const BASE_URL = (
   process.env.CHAINLINK_CONFIDENTIAL_AI_BASE_URL ?? "https://confidential-ai-dev-preview.cldev.cloud"
 ).replace(/\/+$/, "");
 const API_KEY = process.env.CHAINLINK_CONFIDENTIAL_AI_API_KEY ?? "";
-const MODEL = process.env.CHAINLINK_CONFIDENTIAL_AI_MODEL ?? "gemma4";
+
+// Models the live Confidential AI API accepts (GET /v1/models). A misconfigured
+// CHAINLINK_CONFIDENTIAL_AI_MODEL must not break scoring, so we clamp to this set.
+const SUPPORTED_MODELS = new Set(["gemma4", "qwen3.6"]);
+const DEFAULT_MODEL = "gemma4";
+
+/** Resolve a requested model to a supported one, falling back to the default with a warning. */
+function resolveModel(requested?: string): string {
+  const m = (requested ?? process.env.CHAINLINK_CONFIDENTIAL_AI_MODEL ?? DEFAULT_MODEL).trim();
+  if (SUPPORTED_MODELS.has(m)) return m;
+  console.warn(`[confidential-ai] model "${m}" is not supported; falling back to "${DEFAULT_MODEL}".`);
+  return DEFAULT_MODEL;
+}
 
 /** True when an API key is configured. The route throws a clear error when it is not. */
 export const isConfidentialAiConfigured = () => API_KEY.length > 0;
@@ -61,7 +73,7 @@ export async function submitInference({
   model,
 }: InferenceRequest): Promise<string> {
   const body = {
-    model: model ?? MODEL,
+    model: resolveModel(model),
     ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
     prompt,
     resources: documents.map(doc => ({

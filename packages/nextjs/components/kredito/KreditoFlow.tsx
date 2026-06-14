@@ -137,6 +137,9 @@ const Stepper = ({ current, maxStep, onJump }: { current: number; maxStep: numbe
     {STEPS.map((label, i) => {
       const active = i === current;
       const reachable = i <= maxStep;
+      const completed = i < current && reachable;
+      // Borrow + Liquidity are gated on the (not-yet-deployed) lending vault — flag them as coming soon.
+      const comingSoon = i >= 4;
       return (
         <button
           key={label}
@@ -153,12 +156,19 @@ const Stepper = ({ current, maxStep, onJump }: { current: number; maxStep: numbe
         >
           <span
             className={`grid place-items-center h-5 w-5 rounded-full text-xs ${
-              active ? "bg-primary-content/20" : "bg-base-300"
+              active ? "bg-primary-content/20" : completed ? "bg-success text-success-content" : "bg-base-300"
             }`}
           >
-            {i < current ? <CheckIcon className="h-3 w-3" /> : i + 1}
+            {completed ? <CheckIcon className="h-3 w-3" /> : i + 1}
           </span>
           {label}
+          {comingSoon && (
+            <span
+              className={`badge badge-xs ${active ? "badge-ghost text-primary-content/80" : "badge-ghost text-base-content/50"}`}
+            >
+              soon
+            </span>
+          )}
         </button>
       );
     })}
@@ -780,13 +790,42 @@ const ScoreSection = ({
         </Panel>
       )}
 
+      {/* Eligibility gate — block the path to mint/certificate when the score is below threshold. */}
+      {!result.eligible && (
+        <Panel
+          eyebrow="Not eligible yet"
+          title="You can't mint a certificate with this result"
+          className="mt-5"
+          action={<RiskBadge tier={toUiRiskTier(result.riskTier)} size="sm" />}
+        >
+          <p className="text-sm text-base-content/70">
+            Your combined score of <span className="k-mono font-semibold">{result.combinedScore}</span> is below the{" "}
+            <span className="k-mono font-semibold">{result.minEligibleScore}</span> threshold required to issue a credit
+            certificate
+            {toUiRiskTier(result.riskTier) === "high" ? ", and the analysis flagged your documents as high risk" : ""}.
+            The protocol issuer only attests scores at or above the threshold, so the certificate step is locked.
+          </p>
+          <ul className="mt-3 space-y-1 text-sm text-base-content/65 list-disc pl-5">
+            <li>Upload more complete documents (financials, tax returns, bank statements, A/R aging).</li>
+            <li>Make sure each file is legible and consistent — flagged or unreliable documents lower the score.</li>
+            <li>Re-run the confidential credit check once your evidence is stronger.</li>
+          </ul>
+        </Panel>
+      )}
+
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
           <ArrowLeftIcon className="h-4 w-4" /> Back
         </button>
-        <button className="btn btn-primary gap-1" onClick={onIssue} type="button">
-          Issue certificate <ArrowRightIcon className="h-4 w-4" />
-        </button>
+        {result.eligible ? (
+          <button className="btn btn-primary gap-1" onClick={onIssue} type="button">
+            Continue to mint your certificate <ArrowRightIcon className="h-4 w-4" />
+          </button>
+        ) : (
+          <button className="btn btn-warning gap-1" onClick={onBack} type="button">
+            <ArrowLeftIcon className="h-4 w-4" /> Re-run with better documents
+          </button>
+        )}
       </div>
     </>
   );
@@ -1031,6 +1070,9 @@ const CertificateSection = ({
                   View on explorer
                   <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
                 </a>
+                <button className="btn btn-primary btn-sm w-full gap-1" onClick={onNext} type="button">
+                  Continue to profile setup <ArrowRightIcon className="h-4 w-4" />
+                </button>
               </div>
             ) : (
               <div className="space-y-3">
@@ -1079,7 +1121,8 @@ const CertificateSection = ({
           <ArrowLeftIcon className="h-4 w-4" /> Back
         </button>
         <button className="btn btn-primary gap-1" onClick={onNext} type="button" disabled={!minted}>
-          Set up profile <ArrowRightIcon className="h-4 w-4" />
+          {minted ? "Continue to profile setup" : "Mint your identity to continue"}{" "}
+          <ArrowRightIcon className="h-4 w-4" />
         </button>
       </div>
     </>
@@ -1387,6 +1430,20 @@ const ProfileSection = ({
                 </a>
               )}
             </div>
+            {saved && (
+              <div className="mt-4 rounded-field bg-success/10 px-4 py-3">
+                <p className="text-sm font-medium text-success inline-flex items-center gap-1.5">
+                  <CheckCircleIcon className="h-5 w-5" /> Profile saved
+                </p>
+                <p className="mt-1 text-sm text-base-content/65">
+                  Your public credit card is live. Next up is borrowing against your attestation — launching when the
+                  lending vault goes live.
+                </p>
+                <button className="btn btn-primary btn-sm gap-1 mt-3" onClick={onNext} type="button">
+                  Continue to borrow <ArrowRightIcon className="h-4 w-4" />
+                </button>
+              </div>
+            )}
             {resolverConfigured && (
               <p className="mt-3 text-xs text-base-content/50">
                 <code>setTexts</code> writes your ENS text records through the owner-gated resolver (gas sponsored),
@@ -1726,13 +1783,18 @@ const BorrowSection = ({
         </div>
       )}
 
-      <div className="flex justify-between mt-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
           <ArrowLeftIcon className="h-4 w-4" /> Back
         </button>
-        <button className="btn btn-primary gap-1" onClick={onNext} type="button">
-          Continue to liquidity <ArrowRightIcon className="h-4 w-4" />
-        </button>
+        <div className="flex flex-col items-end gap-1">
+          <button className="btn btn-outline gap-1" onClick={onNext} type="button">
+            Preview liquidity <ArrowRightIcon className="h-4 w-4" />
+          </button>
+          {!configured && (
+            <span className="text-xs text-base-content/45">Borrowing launches when the lending vault goes live.</span>
+          )}
+        </div>
       </div>
     </>
   );
