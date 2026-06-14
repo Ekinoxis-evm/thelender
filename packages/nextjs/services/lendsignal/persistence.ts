@@ -33,6 +33,8 @@ export async function persistCreditCheck(args: {
       attestation_hash: result.scoreInputs.attestationHash,
       bureau_report_hash: result.scoreInputs.bureauReportHash,
       evidence_digest: result.scoreInputs.evidenceDigest,
+      offchain_inference_id: result.offchain?.inferenceId ?? null,
+      offchain_profile_score: result.offchain?.profileScore ?? null,
       legal_name: profile.legalName,
       country: profile.country,
       industry: profile.industry ?? null,

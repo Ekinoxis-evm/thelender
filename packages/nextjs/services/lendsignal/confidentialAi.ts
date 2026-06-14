@@ -11,8 +11,7 @@
  *
  * Docs/skill: .agents/skills/chainlink-confidential-ai-attester-skill/SKILL.md
  */
-import { CREDIT_SYSTEM_PROMPT, buildCreditPrompt } from "./prompt";
-import type { BusinessProfile, UploadedDocument } from "./types";
+import type { UploadedDocument } from "./types";
 
 const BASE_URL = process.env.CHAINLINK_CONFIDENTIAL_AI_BASE_URL ?? "https://confidential-ai-dev-preview.cldev.cloud";
 const API_KEY = process.env.CHAINLINK_CONFIDENTIAL_AI_API_KEY ?? "";
@@ -36,9 +35,11 @@ export type InferenceSnapshot = {
   }>;
 };
 
-type SubmitArgs = {
-  profile: BusinessProfile;
-  documents: UploadedDocument[];
+export type InferenceRequest = {
+  prompt: string;
+  systemPrompt?: string;
+  documents?: UploadedDocument[];
+  model?: string;
 };
 
 function authHeaders(): HeadersInit {
@@ -49,11 +50,16 @@ function authHeaders(): HeadersInit {
 }
 
 /** Submit an inference request. Returns the request id to poll. */
-export async function submitInference({ profile, documents }: SubmitArgs): Promise<string> {
+export async function submitInference({
+  prompt,
+  systemPrompt,
+  documents = [],
+  model,
+}: InferenceRequest): Promise<string> {
   const body = {
-    model: MODEL,
-    system_prompt: CREDIT_SYSTEM_PROMPT,
-    prompt: buildCreditPrompt(profile),
+    model: model ?? MODEL,
+    ...(systemPrompt ? { system_prompt: systemPrompt } : {}),
+    prompt,
     resources: documents.map(doc => ({
       filename: doc.filename,
       content_type: doc.contentType,
@@ -99,13 +105,13 @@ const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
  * can take minutes (Docling preprocessing), so the demo uses small text docs.
  */
 export async function runInference(
-  args: SubmitArgs,
+  req: InferenceRequest,
   opts: { intervalMs?: number; maxAttempts?: number } = {},
 ): Promise<InferenceSnapshot> {
   const intervalMs = opts.intervalMs ?? 3000;
   const maxAttempts = opts.maxAttempts ?? 40; // ~120s ceiling
 
-  const id = await submitInference(args);
+  const id = await submitInference(req);
 
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     await sleep(intervalMs);

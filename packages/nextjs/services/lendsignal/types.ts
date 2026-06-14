@@ -38,6 +38,15 @@ export type UploadedDocument = {
   contentBase64: string;
 };
 
+export type DocumentSignal = "positive" | "neutral" | "negative";
+
+/** Per-document finding — the model analyzes each uploaded file one by one. */
+export type DocumentAnalysis = {
+  filename: string;
+  finding: string;
+  signal: DocumentSignal;
+};
+
 /** Strict JSON the Confidential AI Attester is asked to return (see prompt.ts). */
 export type ConfidentialAiResult = {
   business_verified: boolean;
@@ -48,8 +57,26 @@ export type ConfidentialAiResult = {
   /** 0..1000 creditworthiness. */
   creditworthiness_score: number;
   risk_tier: RiskTier;
+  /** Per-document breakdown (one entry per attached file). */
+  document_analysis: DocumentAnalysis[];
   reasoning_summary: string;
   missing_information: string[];
+};
+
+/**
+ * Second, OFF-CHAIN Confidential AI query: assesses the business/industry from the
+ * public profile only (no private documents). Complementary signal shown apart —
+ * it is NOT blended into the onchain combinedScore.
+ */
+export type OffchainProfileSignal = {
+  inferenceId: string;
+  model: string;
+  attested: boolean;
+  /** 0..1000 informational profile/industry score (not onchain). */
+  profileScore: number;
+  industryRisk: RiskBand;
+  marketView: string;
+  summary: string;
 };
 
 /** Normalized CRS credit-bureau signal (Feature 3). Real CRS later, mock now. */
@@ -106,4 +133,6 @@ export type ScoreResult = {
   weights: { aiBps: number; bureauBps: number };
   scoreInputs: ScoreInputs;
   usage?: { prompt_tokens: number; completion_tokens: number };
+  /** Second query: off-chain profile/industry signal (shown apart; not onchain). */
+  offchain?: OffchainProfileSignal;
 };

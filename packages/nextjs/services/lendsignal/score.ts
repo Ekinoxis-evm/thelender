@@ -4,10 +4,23 @@
  * `combinedScore`. Mirrors CreditTypes.sol:
  *   combined = (ai * 7000 + bureau * 3000) / 10000   (integer floor)
  *   >=750 Low · 600..749 Medium · <600 High   ·   eligible = >=750 && tier!=High
+ *
+ * The off-chain profile signal (second query) is NOT blended — it is carried
+ * alongside as a complementary, informational read.
  */
 import type { InferenceSnapshot } from "./confidentialAi";
 import type { BorrowerStrength } from "./creditBureau";
-import type { ConfidentialAiResult, CreditBureauSignal, RiskBand, RiskTier, ScoreInputs, ScoreResult } from "./types";
+import type {
+  ConfidentialAiResult,
+  CreditBureauSignal,
+  DocumentAnalysis,
+  DocumentSignal,
+  OffchainProfileSignal,
+  RiskBand,
+  RiskTier,
+  ScoreInputs,
+  ScoreResult,
+} from "./types";
 import { keccak256, stringToBytes } from "viem";
 
 export const AI_WEIGHT_BPS = 7000;
@@ -46,6 +59,7 @@ export function parseAiOutput(output: string | undefined, fallbackStrength: Borr
       creditworthiness_score: score,
       // Keep tier consistent with the numeric score regardless of what the model said.
       risk_tier: tierFromScore(score),
+      document_analysis: parseDocumentAnalysis(parsed.document_analysis),
       reasoning_summary: String(parsed.reasoning_summary ?? "").slice(0, 1000),
       missing_information: Array.isArray(parsed.missing_information)
         ? parsed.missing_information.map(String).slice(0, 12)
@@ -57,7 +71,7 @@ export function parseAiOutput(output: string | undefined, fallbackStrength: Borr
 
 /** Deterministic AI result used for the mock fallback (no API key) or parse failure. */
 export function fallbackAiResult(strength: BorrowerStrength): ConfidentialAiResult {
-  const byStrength: Record<BorrowerStrength, ConfidentialAiResult> = {
+  const byStrength: Record<BorrowerStrength, Omit<ConfidentialAiResult, "document_analysis">> = {
     strong: {
       business_verified: true,
       document_authenticity: "high",
@@ -92,7 +106,53 @@ export function fallbackAiResult(strength: BorrowerStrength): ConfidentialAiResu
       missing_information: ["tax returns", "A/R aging report", "verified bank statements"],
     },
   };
-  return byStrength[strength];
+  return { ...byStrength[strength], document_analysis: [] };
+}
+
+/** Parse the off-chain profile query output into a complementary signal. */
+export function parseProfileOutput(
+  snapshot: InferenceSnapshot,
+  model: string,
+  fallbackStrength: BorrowerStrength,
+): OffchainProfileSignal {
+  const parsed = tryExtractJson(snapshot.output);
+  if (parsed) {
+    return {
+      inferenceId: snapshot.id,
+      model,
+      attested: true,
+      profileScore: clampScore(Number(parsed.profile_score ?? 0)),
+      industryRisk: asBand(parsed.industry_risk),
+      marketView: String(parsed.market_view ?? "").slice(0, 400),
+      summary: String(parsed.summary ?? "").slice(0, 600),
+    };
+  }
+  return { ...fallbackOffchain(fallbackStrength), inferenceId: snapshot.id, model, attested: true };
+}
+
+/** Deterministic off-chain signal for the mock fallback / parse failure. */
+export function fallbackOffchain(strength: BorrowerStrength): OffchainProfileSignal {
+  const byStrength: Record<BorrowerStrength, Omit<OffchainProfileSignal, "inferenceId" | "model" | "attested">> = {
+    strong: {
+      profileScore: 800,
+      industryRisk: "low",
+      marketView: "Stable sector with healthy demand and manageable competition.",
+      summary: "Profile and industry signals are favorable for working-capital lending.",
+    },
+    medium: {
+      profileScore: 660,
+      industryRisk: "medium",
+      marketView: "Cyclical/seasonal sector — revenue can swing across the year.",
+      summary: "Profile is adequate but sector volatility warrants a closer look.",
+    },
+    weak: {
+      profileScore: 520,
+      industryRisk: "high",
+      marketView: "Competitive, thin-margin sector with elevated failure rates.",
+      summary: "Profile and sector signals point to elevated credit risk.",
+    },
+  };
+  return { ...byStrength[strength], inferenceId: `mock-${strength}`, model: "mock", attested: false };
 }
 
 type ScoreResultArgs = {
@@ -104,6 +164,7 @@ type ScoreResultArgs = {
   snapshot?: InferenceSnapshot;
   documentsBase64: string[];
   nowSeconds: number;
+  offchain?: OffchainProfileSignal;
 };
 
 /** Assemble the full ScoreResult, including the onchain-ready `ScoreInputs`. */
@@ -116,6 +177,7 @@ export function buildScoreResult({
   snapshot,
   documentsBase64,
   nowSeconds,
+  offchain,
 }: ScoreResultArgs): ScoreResult {
   const aiScore = clampScore(ai.creditworthiness_score);
   const bureauScore = clampScore(bureau.bureauScore);
@@ -147,6 +209,7 @@ export function buildScoreResult({
     weights: { aiBps: AI_WEIGHT_BPS, bureauBps: BUREAU_WEIGHT_BPS },
     scoreInputs,
     usage: snapshot?.usage,
+    ...(offchain ? { offchain } : {}),
   };
 }
 
@@ -159,6 +222,22 @@ function computeEvidenceDigest(snapshot: InferenceSnapshot | undefined, document
 
 function asBand(v: unknown): RiskBand {
   return v === "low" || v === "medium" || v === "high" ? v : "medium";
+}
+
+function asSignal(v: unknown): DocumentSignal {
+  return v === "positive" || v === "neutral" || v === "negative" ? v : "neutral";
+}
+
+function parseDocumentAnalysis(v: unknown): DocumentAnalysis[] {
+  if (!Array.isArray(v)) return [];
+  return v.slice(0, 10).map(item => {
+    const o = (item ?? {}) as Record<string, unknown>;
+    return {
+      filename: String(o.filename ?? "document").slice(0, 120),
+      finding: String(o.finding ?? "").slice(0, 240),
+      signal: asSignal(o.signal),
+    };
+  });
 }
 
 function tryExtractJson(text: string | undefined): Record<string, unknown> | null {

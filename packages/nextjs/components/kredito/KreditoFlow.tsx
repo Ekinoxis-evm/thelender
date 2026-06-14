@@ -37,6 +37,17 @@ const REQUIRED_DOCS = [
 const MAX_BYTES = 10 * 1024 * 1024;
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000" as `0x${string}`;
 
+const SIGNAL_BADGE: Record<string, string> = {
+  positive: "badge-success",
+  neutral: "badge-ghost",
+  negative: "badge-error",
+};
+const BAND_BADGE: Record<string, string> = {
+  low: "badge-success",
+  medium: "badge-warning",
+  high: "badge-error",
+};
+
 const fileToBase64 = (file: File) =>
   new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -497,6 +508,63 @@ const ScoreSection = ({
           </Panel>
         </div>
       </div>
+
+      {/* Per-document analysis — each uploaded file analyzed one by one */}
+      {result.confidentialAi.document_analysis.length > 0 && (
+        <Panel eyebrow="Per document" title="Document analysis" className="mt-5">
+          <div className="divide-y divide-base-300">
+            {result.confidentialAi.document_analysis.map((d, i) => (
+              <div key={`${d.filename}-${i}`} className="flex items-start gap-3 py-2.5 text-sm">
+                <span className={`badge badge-sm shrink-0 mt-0.5 ${SIGNAL_BADGE[d.signal]}`}>{d.signal}</span>
+                <div className="min-w-0">
+                  <p className="font-medium truncate">{d.filename}</p>
+                  <p className="text-base-content/70">{d.finding}</p>
+                </div>
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      {/* Second query — off-chain profile/industry analysis (no documents) */}
+      {result.offchain && (
+        <Panel
+          eyebrow="Second query · off-chain"
+          title="Profile & industry analysis"
+          className="mt-5"
+          action={
+            result.offchain.attested ? (
+              <span className="badge badge-info badge-sm">off-chain · TEE</span>
+            ) : (
+              <span className="badge badge-ghost badge-sm">mock</span>
+            )
+          }
+        >
+          <div className="grid sm:grid-cols-3 gap-4 mb-3">
+            <div>
+              <p className="k-eyebrow mb-1">Profile score</p>
+              <p className="k-mono text-2xl font-semibold">{result.offchain.profileScore}</p>
+            </div>
+            <div>
+              <p className="k-eyebrow mb-1">Industry risk</p>
+              <span className={`badge ${BAND_BADGE[result.offchain.industryRisk]}`}>
+                {result.offchain.industryRisk}
+              </span>
+            </div>
+            <div>
+              <p className="k-eyebrow mb-1">Request ID</p>
+              <code className="k-mono text-xs break-all">{result.offchain.inferenceId}</code>
+            </div>
+          </div>
+          {result.offchain.summary && <p className="text-sm text-base-content/70">{result.offchain.summary}</p>}
+          {result.offchain.marketView && (
+            <p className="text-xs text-base-content/55 mt-1">{result.offchain.marketView}</p>
+          )}
+          <p className="text-xs text-base-content/45 mt-2">
+            Complementary signal from the public profile only — not part of the onchain score.
+          </p>
+        </Panel>
+      )}
 
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">

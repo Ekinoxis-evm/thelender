@@ -19,6 +19,8 @@ create table if not exists public.credit_checks (
   attestation_hash   text,
   bureau_report_hash text,
   evidence_digest    text,
+  offchain_inference_id  text,                  -- 2nd query: off-chain profile analysis
+  offchain_profile_score integer,
   legal_name         text,
   country            text,
   industry           text,

@@ -7,20 +7,35 @@ import {
 import { type BorrowerStrength, evaluateBureau } from "~~/services/lendsignal/creditBureau";
 import { getDemoProfile } from "~~/services/lendsignal/demoProfiles";
 import { persistCreditCheck } from "~~/services/lendsignal/persistence";
-import { buildScoreResult, fallbackAiResult, parseAiOutput } from "~~/services/lendsignal/score";
-import type { BusinessProfile, ConfidentialAiResult, UploadedDocument } from "~~/services/lendsignal/types";
+import {
+  CREDIT_SYSTEM_PROMPT,
+  PROFILE_SYSTEM_PROMPT,
+  buildCreditPrompt,
+  buildProfilePrompt,
+} from "~~/services/lendsignal/prompt";
+import {
+  buildScoreResult,
+  fallbackAiResult,
+  fallbackOffchain,
+  parseAiOutput,
+  parseProfileOutput,
+} from "~~/services/lendsignal/score";
+import type {
+  BusinessProfile,
+  ConfidentialAiResult,
+  OffchainProfileSignal,
+  UploadedDocument,
+} from "~~/services/lendsignal/types";
 
 /**
  * POST /api/lendsignal/score
  *
- * The LendSignal scoring pipeline (server-side; the Confidential AI API key never
- * reaches the client):
- *   1. Chainlink Confidential AI Attester — attested inference over the documents
- *   2. CRS bureau (mock)                  — normalized credit signal
- *   3. combine 70/30                      — combinedScore + riskTier + onchain ScoreInputs
+ * Runs TWO Confidential AI queries in parallel:
+ *   1. CREDIT  — over the uploaded documents, analyzing each file one by one;
+ *                attested, feeds the onchain combinedScore (70/30 with the bureau).
+ *   2. PROFILE — off-chain, profile-only complementary signal (shown apart).
  *
- * Falls back to a deterministic mock (attested:false) when no API key is set, so
- * the flow is fully usable in local dev without credentials.
+ * Falls back to a deterministic mock (attested:false) when no API key is set.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -79,40 +94,54 @@ export async function POST(req: NextRequest) {
   const documentsBase64 = documents.map(d => d.contentBase64);
   const nowSeconds = Math.floor(Date.now() / 1000);
 
-  // --- Step 1: Confidential AI inference (or mock fallback) ---
+  // --- Step 1: the two Confidential AI queries (or mock fallback) ---
   let ai: ConfidentialAiResult;
   let attested = false;
   let inferenceId: string;
   let snapshot: InferenceSnapshot | undefined;
+  let offchain: OffchainProfileSignal | undefined;
   let note: string | undefined;
 
   if (isConfidentialAiConfigured()) {
-    try {
-      snapshot = await runInference({ profile, documents });
-      if (snapshot.status === "completed") {
-        ai = parseAiOutput(snapshot.output, strength);
-        attested = true;
-        inferenceId = snapshot.id;
-      } else {
-        ai = fallbackAiResult(strength);
-        inferenceId = snapshot.id;
-        note = `Inference returned status "${snapshot.status}"${snapshot.error ? `: ${snapshot.error}` : ""}. Using fallback scoring.`;
-      }
-    } catch (e) {
+    const filenames = documents.map(d => d.filename);
+    const [mainSettled, profileSettled] = await Promise.allSettled([
+      runInference({ prompt: buildCreditPrompt(profile, filenames), systemPrompt: CREDIT_SYSTEM_PROMPT, documents }),
+      runInference({ prompt: buildProfilePrompt(profile), systemPrompt: PROFILE_SYSTEM_PROMPT, documents: [] }),
+    ]);
+
+    // Query 1 — document-based, attested.
+    if (mainSettled.status === "fulfilled" && mainSettled.value.status === "completed") {
+      snapshot = mainSettled.value;
+      ai = parseAiOutput(snapshot.output, strength);
+      attested = true;
+      inferenceId = snapshot.id;
+    } else {
       ai = fallbackAiResult(strength);
-      inferenceId = `mock-${nowSeconds}`;
-      note = `Confidential AI request failed (${e instanceof Error ? e.message : String(e)}). Using fallback scoring.`;
+      if (mainSettled.status === "fulfilled") {
+        inferenceId = mainSettled.value.id;
+        note = `Inference returned status "${mainSettled.value.status}"${mainSettled.value.error ? `: ${mainSettled.value.error}` : ""}. Using fallback scoring.`;
+      } else {
+        inferenceId = `mock-${nowSeconds}`;
+        note = `Confidential AI request failed (${mainSettled.reason instanceof Error ? mainSettled.reason.message : String(mainSettled.reason)}). Using fallback scoring.`;
+      }
     }
+
+    // Query 2 — off-chain profile signal (complementary; never blocks the main result).
+    offchain =
+      profileSettled.status === "fulfilled" && profileSettled.value.status === "completed"
+        ? parseProfileOutput(profileSettled.value, MODEL, strength)
+        : fallbackOffchain(strength);
   } else {
     ai = fallbackAiResult(strength);
     inferenceId = `mock-${nowSeconds}`;
+    offchain = fallbackOffchain(strength);
     note = "CHAINLINK_CONFIDENTIAL_AI_API_KEY not set — returning a deterministic mock (not attested).";
   }
 
   // --- Step 2: CRS bureau (mock) ---
   const bureau = evaluateBureau(profile, strength);
 
-  // --- Step 3: combine 70/30 → onchain-ready ScoreInputs ---
+  // --- Step 3: combine 70/30 → onchain-ready ScoreInputs (+ off-chain signal) ---
   const result = buildScoreResult({
     inferenceId,
     model: MODEL,
@@ -122,6 +151,7 @@ export async function POST(req: NextRequest) {
     snapshot,
     documentsBase64,
     nowSeconds,
+    offchain,
   });
 
   // Persist the normalized check (best-effort; never blocks the response on failure).
