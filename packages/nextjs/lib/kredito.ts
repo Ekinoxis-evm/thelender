@@ -17,10 +17,18 @@ export type EnsIdentity = {
   full_name: string | null;
   node: string | null;
   status: CreditStatus;
-  url: string | null;
-  twitter: string | null;
-  avatar_url: string | null;
   display_name: string | null;
+  description: string | null;
+  avatar_url: string | null;
+  header_url: string | null;
+  url: string | null;
+  email: string | null;
+  location: string | null;
+  twitter: string | null;
+  github: string | null;
+  telegram: string | null;
+  discord: string | null;
+  linkedin: string | null;
   attestation_hash: string | null;
   tx_hash: string | null;
   created_at: string;
@@ -50,23 +58,105 @@ export function labelToNode(label: string): Hex {
 export const mintMessage = (wallet: string, normalizedLabel: string) =>
   `KreditoOne — claim credit identity\nname: ${normalizedLabel}.${KREDITO_PARENT_NAME}\nwallet: ${wallet}`;
 
-export const isHttpUrl = (u?: string | null): u is string => !!u && /^https?:\/\//i.test(u);
-const TWITTER_RE = /^[A-Za-z0-9_]{1,15}$/;
-export const isTwitterHandle = (h?: string | null): h is string => !!h && TWITTER_RE.test(h);
+export const editMessage = (wallet: string, normalizedLabel: string) =>
+  `KreditoOne — edit profile\nname: ${normalizedLabel}.${KREDITO_PARENT_NAME}\nwallet: ${wallet}`;
 
-/** Drop any profile field that fails its scheme/format allowlist (prevents stored javascript: URLs etc.). */
-export function sanitizeProfile(p?: { display_name?: string; url?: string; twitter?: string; avatar_url?: string }): {
-  display_name: string | null;
-  url: string | null;
-  twitter: string | null;
-  avatar_url: string | null;
-} {
-  return {
-    display_name: p?.display_name ? p.display_name.trim().slice(0, 80) : null,
-    url: isHttpUrl(p?.url) ? (p?.url as string) : null,
-    twitter: isTwitterHandle(p?.twitter) ? (p?.twitter as string) : null,
-    avatar_url: isHttpUrl(p?.avatar_url) ? (p?.avatar_url as string) : null,
-  };
+export const isHttpUrl = (u?: string | null): u is string => !!u && /^https?:\/\//i.test(u);
+const HANDLE_RE = /^[A-Za-z0-9_.-]{1,39}$/;
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+export const isTwitterHandle = (h?: string | null): h is string => !!h && HANDLE_RE.test(h);
+
+export type ProfileKind = "text" | "url" | "handle" | "email";
+export type ProfileCol =
+  | "display_name"
+  | "description"
+  | "avatar_url"
+  | "header_url"
+  | "url"
+  | "email"
+  | "location"
+  | "twitter"
+  | "github"
+  | "telegram"
+  | "discord"
+  | "linkedin";
+
+export type ProfileField = { col: ProfileCol; ensKey: string; label: string; kind: ProfileKind; placeholder?: string };
+
+/** Single source of truth: each editable profile field, its ENS text-record key, and validation kind. */
+export const PROFILE_FIELDS: ProfileField[] = [
+  { col: "display_name", ensKey: "name", label: "Display name", kind: "text", placeholder: "Acme Inc." },
+  { col: "description", ensKey: "description", label: "About", kind: "text", placeholder: "What your business does" },
+  { col: "avatar_url", ensKey: "avatar", label: "Profile picture URL", kind: "url", placeholder: "https://…" },
+  { col: "header_url", ensKey: "header", label: "Background banner URL", kind: "url", placeholder: "https://…" },
+  { col: "url", ensKey: "url", label: "Website", kind: "url", placeholder: "https://…" },
+  { col: "email", ensKey: "email", label: "Contact email", kind: "email", placeholder: "hello@acme.com" },
+  { col: "location", ensKey: "location", label: "Address / location", kind: "text", placeholder: "City, Country" },
+  { col: "twitter", ensKey: "com.twitter", label: "X / Twitter", kind: "handle", placeholder: "handle" },
+  { col: "github", ensKey: "com.github", label: "GitHub", kind: "handle", placeholder: "handle" },
+  { col: "telegram", ensKey: "org.telegram", label: "Telegram", kind: "handle", placeholder: "handle" },
+  { col: "discord", ensKey: "com.discord", label: "Discord", kind: "text", placeholder: "name#0000" },
+  { col: "linkedin", ensKey: "com.linkedin", label: "LinkedIn", kind: "text", placeholder: "company/acme or URL" },
+];
+
+export type ProfileInput = Partial<Record<ProfileCol, string>>;
+export type Profile = Record<ProfileCol, string | null>;
+
+function validField(kind: ProfileKind, v: string): boolean {
+  switch (kind) {
+    case "url":
+      return isHttpUrl(v);
+    case "handle":
+      return HANDLE_RE.test(v);
+    case "email":
+      return EMAIL_RE.test(v) && v.length <= 254;
+    case "text":
+      return v.length <= 300;
+  }
+}
+
+/** Drop/normalize every field by its kind (prevents stored javascript: URLs etc.). */
+export function sanitizeProfile(p?: ProfileInput): Profile {
+  const out = {} as Profile;
+  for (const f of PROFILE_FIELDS) {
+    const v = p?.[f.col]?.trim();
+    out[f.col] = v && validField(f.kind, v) ? v : null;
+  }
+  return out;
+}
+
+/** Map a sanitized profile to ENS (key,value) pairs for an on-chain resolver.setTexts batch. */
+export function ensTextRecords(p: Profile): { keys: string[]; values: string[] } {
+  const keys: string[] = [];
+  const values: string[] = [];
+  for (const f of PROFILE_FIELDS) {
+    const v = p[f.col];
+    if (v != null) {
+      keys.push(f.ensKey);
+      values.push(v);
+    }
+  }
+  return { keys, values };
+}
+
+/** A safe external link for a social/contact field (for the card). Null if unsupported/invalid. */
+export function socialUrl(col: ProfileCol, value: string): string | null {
+  switch (col) {
+    case "url":
+      return isHttpUrl(value) ? value : null;
+    case "twitter":
+      return HANDLE_RE.test(value) ? `https://x.com/${value}` : null;
+    case "github":
+      return HANDLE_RE.test(value) ? `https://github.com/${value}` : null;
+    case "telegram":
+      return HANDLE_RE.test(value) ? `https://t.me/${value}` : null;
+    case "linkedin":
+      return isHttpUrl(value) ? value : HANDLE_RE.test(value) ? `https://www.linkedin.com/${value}` : null;
+    case "email":
+      return EMAIL_RE.test(value) ? `mailto:${value}` : null;
+    default:
+      return null;
+  }
 }
 
 /** Minimal ABI for the issuer mint/revoke path (full ABI is auto-generated on deploy). */
@@ -99,6 +189,21 @@ export const kreditoControllerAbi = [
     inputs: [
       { name: "label", type: "string" },
       { name: "status", type: "string" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+/** Minimal ABI for owner-side, sponsored profile writes (batched). */
+export const kreditoResolverAbi = [
+  {
+    type: "function",
+    name: "setTexts",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "node", type: "bytes32" },
+      { name: "keys", type: "string[]" },
+      { name: "values", type: "string[]" },
     ],
     outputs: [],
   },

@@ -100,10 +100,7 @@ export async function POST(req: NextRequest) {
     status: "approved",
     attestation_hash: decision.attestation_hash,
     tx_hash: txHash,
-    url: clean.url,
-    twitter: clean.twitter,
-    avatar_url: clean.avatar_url,
-    display_name: clean.display_name,
+    ...clean,
   });
 
   return NextResponse.json({ identity, txHash });

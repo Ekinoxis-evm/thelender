@@ -51,6 +51,7 @@ contract KreditoResolver is IExtendedResolver {
     error NotOwner();
     error AlreadyInitialized();
     error UnsupportedResolverProfile(bytes4 selector);
+    error LengthMismatch();
 
     event IssuerUpdated(address indexed issuer);
     event IdentityInitialized(bytes32 indexed node, address indexed owner);
@@ -108,6 +109,19 @@ contract KreditoResolver is IExtendedResolver {
     /// @notice Set a text record. Issuer-locked keys require the issuer; all other keys require the
     ///         subname owner. Unknown keys default to OWNER-only (never "anyone").
     function setText(bytes32 node, string calldata key, string calldata value) external {
+        _authedSetText(node, key, value);
+    }
+
+    /// @notice Batch profile update — one tx for the whole profile (sponsored). Per-key ACL still
+    ///         applies, so a non-issuer caller cannot smuggle a locked key (status/attestation) in.
+    function setTexts(bytes32 node, string[] calldata keys, string[] calldata values) external {
+        if (keys.length != values.length) revert LengthMismatch();
+        for (uint256 i = 0; i < keys.length; i++) {
+            _authedSetText(node, keys[i], values[i]);
+        }
+    }
+
+    function _authedSetText(bytes32 node, string calldata key, string calldata value) private {
         bytes32 kh = keccak256(bytes(key));
         if (kh == KEY_STATUS || kh == KEY_ATTESTATION) {
             if (msg.sender != issuer) revert NotIssuer();

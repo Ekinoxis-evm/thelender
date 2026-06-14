@@ -1,5 +1,5 @@
 import "server-only";
-import type { CreditStatus, EnsIdentity } from "~~/lib/kredito";
+import type { CreditStatus, EnsIdentity, Profile } from "~~/lib/kredito";
 import { createAdminClient } from "~~/services/supabase/admin";
 
 /**
@@ -41,19 +41,17 @@ export async function isLabelTaken(label: string): Promise<boolean> {
   return (await getIdentityByLabel(label)) !== null;
 }
 
-export async function insertIdentity(row: {
-  label: string;
-  wallet_address: string;
-  full_name: string;
-  node: string;
-  status: CreditStatus;
-  attestation_hash: string | null;
-  tx_hash: string;
-  url?: string | null;
-  twitter?: string | null;
-  avatar_url?: string | null;
-  display_name?: string | null;
-}): Promise<EnsIdentity> {
+export async function insertIdentity(
+  row: {
+    label: string;
+    wallet_address: string;
+    full_name: string;
+    node: string;
+    status: CreditStatus;
+    attestation_hash: string | null;
+    tx_hash: string;
+  } & Partial<Profile>,
+): Promise<EnsIdentity> {
   const db = createAdminClient();
   const { data, error } = await db
     .from("ens_identities")
@@ -64,11 +62,7 @@ export async function insertIdentity(row: {
   return data as EnsIdentity;
 }
 
-export async function updateProfile(
-  label: string,
-  wallet: string,
-  fields: { url?: string; twitter?: string; avatar_url?: string; display_name?: string },
-): Promise<EnsIdentity> {
+export async function updateProfile(label: string, wallet: string, fields: Profile): Promise<EnsIdentity> {
   const db = createAdminClient();
   // Owner check: only the identity's wallet may edit (status/attestation are not editable here).
   const { data, error } = await db

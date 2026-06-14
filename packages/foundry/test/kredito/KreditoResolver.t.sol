@@ -123,4 +123,43 @@ contract KreditoResolverTest is Test {
         resolver.setStatus(node, "review");
         assertEq(resolver.text(node, "kredito.status"), "review");
     }
+
+    function test_OwnerCanBatchEditProfile() public {
+        string[] memory keys = new string[](3);
+        string[] memory vals = new string[](3);
+        keys[0] = "url";
+        vals[0] = "https://acme.example";
+        keys[1] = "com.twitter";
+        vals[1] = "acme";
+        keys[2] = "description";
+        vals[2] = "B2B supplier";
+        vm.prank(business);
+        resolver.setTexts(node, keys, vals);
+        assertEq(resolver.text(node, "url"), "https://acme.example");
+        assertEq(resolver.text(node, "com.twitter"), "acme");
+        assertEq(resolver.text(node, "description"), "B2B supplier");
+    }
+
+    function test_BatchRejectsLockedKeyFromOwner() public {
+        string[] memory keys = new string[](2);
+        string[] memory vals = new string[](2);
+        keys[0] = "url";
+        vals[0] = "https://acme.example";
+        keys[1] = "kredito.status";
+        vals[1] = "approved";
+        vm.prank(business);
+        vm.expectRevert(KreditoResolver.NotIssuer.selector);
+        resolver.setTexts(node, keys, vals);
+    }
+
+    function test_BatchLengthMismatchReverts() public {
+        string[] memory keys = new string[](2);
+        string[] memory vals = new string[](1);
+        keys[0] = "url";
+        keys[1] = "name";
+        vals[0] = "x";
+        vm.prank(business);
+        vm.expectRevert(KreditoResolver.LengthMismatch.selector);
+        resolver.setTexts(node, keys, vals);
+    }
 }
