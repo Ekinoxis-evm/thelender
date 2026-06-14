@@ -1,5 +1,6 @@
 import "server-only";
 import type { CreditStatus, EnsIdentity, Profile } from "~~/lib/kredito";
+import { MIN_ELIGIBLE_SCORE } from "~~/services/lendsignal/score";
 import { createAdminClient } from "~~/services/supabase/admin";
 
 /**
@@ -18,23 +19,30 @@ export type CreditDecision = {
 
 /**
  * Read the latest credit decision for a wallet from main's `credit_checks` table (one row per
- * evaluation) and map eligibility → credit status. `borrower` is stored un-normalized on write, so
- * match case-insensitively. The numeric score column is deliberately not selected.
+ * evaluation). Eligibility is RECOMPUTED from the stored score + risk tier against the current
+ * MIN_ELIGIBLE_SCORE (not the persisted `eligible` flag), so threshold changes apply immediately
+ * to already-stored checks. `borrower` is stored un-normalized, so match case-insensitively.
  */
 export async function getDecision(wallet: string): Promise<CreditDecision | null> {
   const db = createAdminClient();
   const { data } = await db
     .from("credit_checks")
-    .select("borrower, eligible, attestation_hash")
+    .select("borrower, combined_score, risk_tier, attestation_hash")
     .ilike("borrower", wallet)
     .order("created_at", { ascending: false })
     .limit(1)
     .maybeSingle();
   if (!data) return null;
-  const row = data as { borrower: string; eligible: boolean | null; attestation_hash: string | null };
+  const row = data as {
+    borrower: string;
+    combined_score: number | null;
+    risk_tier: string | null;
+    attestation_hash: string | null;
+  };
+  const approved = (row.combined_score ?? 0) >= MIN_ELIGIBLE_SCORE && row.risk_tier !== "high_default_risk";
   return {
     wallet_address: row.borrower,
-    status: row.eligible ? "approved" : "denied",
+    status: approved ? "approved" : "denied",
     attestation_hash: row.attestation_hash,
   };
 }

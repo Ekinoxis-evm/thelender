@@ -17,8 +17,20 @@ import {
   ShieldCheckIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
-import { CertificateCard, HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
+import {
+  CertificateCard,
+  HashChip,
+  type IdentityCardData,
+  IdentityChip,
+  KreditoIdentityCard,
+  PageHeader,
+  Panel,
+  RiskBadge,
+  ScoreMeter,
+  SignalRow,
+} from "~~/components/kredito";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
+import { useKreditoIdentity } from "~~/hooks/scaffold-eth/useKreditoIdentity";
 import { useSmartWalletSign, useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
 import { toTypedMessage, typedData } from "~~/kredito/attestation";
 import { formatUsd } from "~~/kredito/format";
@@ -38,10 +50,13 @@ import {
   type EnsIdentity,
   PROFILE_FIELDS,
   type ProfileCol,
+  type ProfileField,
   creditLimitUsd,
   editMessage,
   ensTextRecords,
   fullName,
+  isHttpUrl,
+  isTwitterHandle,
   kreditoResolverAbi,
   labelToNode,
   mintMessage,
@@ -321,6 +336,8 @@ const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
 
 export const KreditoFlow = () => {
   const { address, isSmartWallet } = useKreditoWallet();
+  // The connected wallet's Kredito ENSv2 identity (NOT mainnet ENS) — shown as a chip once minted.
+  const { identity: walletIdentity } = useKreditoIdentity(address ?? undefined);
 
   const [step, setStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
@@ -483,6 +500,7 @@ export const KreditoFlow = () => {
                       <span className="inline-block h-2 w-2 rounded-full bg-success" />
                       {isSmartWallet ? "Smart wallet connected" : "Wallet connected"}
                     </div>
+                    {walletIdentity && <IdentityChip identity={walletIdentity} />}
                     <AddressDisplay address={address} />
                   </div>
                 ) : (
@@ -682,7 +700,9 @@ const ScoreSection = ({
                 result.eligible ? "bg-success/10 text-success" : "bg-error/10 text-error"
               }`}
             >
-              {result.eligible ? "Eligible — score ≥ 750" : "Not eligible — below 750 / high risk"}
+              {result.eligible
+                ? `Eligible — score ≥ ${result.minEligibleScore}`
+                : `Not eligible — below ${result.minEligibleScore} / high risk`}
             </div>
           </Panel>
         </div>
@@ -1190,6 +1210,36 @@ const ProfileSection = ({
   const attestationHash = identity?.attestation_hash ?? null;
   const txHash = identity?.tx_hash ?? null;
 
+  // Live preview identity built from the current form state — drives the card on the right as the
+  // user types. Status is "approved" (the issuer-locked credential is already minted at this step).
+  const previewIdentity: IdentityCardData = {
+    label: label ?? "yourname",
+    full_name: identity?.full_name ?? null,
+    status: "approved",
+    display_name: form.display_name || null,
+    description: form.description || null,
+    avatar_url: form.avatar_url || null,
+    header_url: form.header_url || null,
+    url: form.url || null,
+    location: form.location || null,
+    twitter: form.twitter || null,
+    github: form.github || null,
+    telegram: form.telegram || null,
+    discord: form.discord || null,
+    linkedin: form.linkedin || null,
+    email: form.email || null,
+    attestation_hash: attestationHash,
+  };
+
+  // Soft validation hint (warn, don't block) for a single field based on its value + kind.
+  const fieldWarning = (col: ProfileCol, kind: ProfileField["kind"], v: string): string | null => {
+    const t = v.trim();
+    if (!t) return null;
+    if (kind === "url" && !isHttpUrl(t)) return "Enter a full https:// URL";
+    if ((col === "twitter" || col === "github") && !isTwitterHandle(t)) return "Use a plain handle (no @ or spaces)";
+    return null;
+  };
+
   return (
     <>
       <PageHeader
@@ -1258,18 +1308,23 @@ const ProfileSection = ({
         </div>
       </Panel>
 
-      <Panel eyebrow="Public profile" title="Edit your profile">
-        {loading ? (
+      {loading ? (
+        <Panel eyebrow="Public profile" title="Edit your profile">
           <div className="flex items-center gap-2 text-sm text-base-content/60">
             <span className="loading loading-spinner loading-sm" /> Loading your identity…
           </div>
-        ) : !label ? (
+        </Panel>
+      ) : !label ? (
+        <Panel eyebrow="Public profile" title="Edit your profile">
           <p className="text-sm text-base-content/65">
             No minted identity was found for this wallet. Go back and mint your{" "}
             <span className="k-mono">.kredito.eth</span> name first.
           </p>
-        ) : (
-          <>
+        </Panel>
+      ) : (
+        <div className="grid lg:grid-cols-2 gap-5 items-start">
+          {/* Left: the editable form */}
+          <Panel eyebrow="Public profile" title="Edit your profile">
             {!resolverConfigured && (
               <div className="alert alert-warning mb-4">
                 <span className="text-sm">
@@ -1279,27 +1334,33 @@ const ProfileSection = ({
               </div>
             )}
             <div className="grid sm:grid-cols-2 gap-4">
-              {PROFILE_FIELDS.map(f => (
-                <label key={f.col} className={f.col === "description" ? "sm:col-span-2 block" : "block"}>
-                  <span className="k-eyebrow">{f.label}</span>
-                  {f.col === "description" ? (
-                    <textarea
-                      className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 text-sm outline-none focus:border-primary transition-colors"
-                      rows={3}
-                      placeholder={f.placeholder}
-                      value={form[f.col]}
-                      onChange={e => setField(f.col, e.target.value)}
-                    />
-                  ) : (
-                    <input
-                      className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 text-sm outline-none focus:border-primary transition-colors"
-                      placeholder={f.placeholder}
-                      value={form[f.col]}
-                      onChange={e => setField(f.col, e.target.value)}
-                    />
-                  )}
-                </label>
-              ))}
+              {PROFILE_FIELDS.map(f => {
+                const warning = fieldWarning(f.col, f.kind, form[f.col]);
+                return (
+                  <label key={f.col} className={f.col === "description" ? "sm:col-span-2 block" : "block"}>
+                    <span className="k-eyebrow">{f.label}</span>
+                    {f.col === "description" ? (
+                      <textarea
+                        className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 text-sm outline-none focus:border-primary transition-colors"
+                        rows={3}
+                        placeholder={f.placeholder}
+                        value={form[f.col]}
+                        onChange={e => setField(f.col, e.target.value)}
+                      />
+                    ) : (
+                      <input
+                        className={`mt-1 w-full rounded-field border bg-base-100 px-3 py-2.5 text-sm outline-none transition-colors ${
+                          warning ? "border-warning focus:border-warning" : "border-base-300 focus:border-primary"
+                        }`}
+                        placeholder={f.placeholder}
+                        value={form[f.col]}
+                        onChange={e => setField(f.col, e.target.value)}
+                      />
+                    )}
+                    {warning && <span className="mt-1 block text-xs text-warning">{warning}</span>}
+                  </label>
+                );
+              })}
             </div>
             <div className="mt-5 flex flex-wrap items-center gap-3">
               <button className="btn btn-primary btn-sm gap-1" onClick={save} disabled={saving} type="button">
@@ -1332,9 +1393,15 @@ const ProfileSection = ({
                 then the Supabase mirror is updated with a content-bound signature so the public card renders fast.
               </p>
             )}
-          </>
-        )}
-      </Panel>
+          </Panel>
+
+          {/* Right: live preview of the public card as the user types */}
+          <div className="space-y-2 lg:sticky lg:top-4">
+            <p className="k-eyebrow">Live preview · public card</p>
+            <KreditoIdentityCard identity={previewIdentity} preview />
+          </div>
+        </div>
+      )}
 
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
@@ -1422,7 +1489,7 @@ const BorrowSection = ({
   const dec = typeof decimalsData === "number" ? decimalsData : 6;
   const sym = typeof symbolData === "string" ? symbolData : "mUSDC";
   const liq = typeof liquidity === "bigint" ? Number(formatUnits(liquidity, dec)) : 0;
-  const minScore = result?.minEligibleScore ?? 750;
+  const minScore = result?.minEligibleScore ?? 600;
   const floor = typeof minScoreData === "bigint" ? Number(minScoreData) : minScore;
   const loan = loanData as VaultLoan | undefined;
 

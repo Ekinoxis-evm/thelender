@@ -53,7 +53,9 @@ Two hardening properties bound into the signature:
   using a constant domain.
 - **H-2 — `maxPrincipal`.** Appended as the LAST field (so prior fields hash identically). The issuer
   binds the maximum loan size into the signature itself, and `borrow` enforces
-  `amount <= maxPrincipal`.
+  `amount <= maxPrincipal`. There is **no user-entered loan amount**: the credit limit is **derived
+  from the score** by `creditLimitUsd` (`packages/nextjs/lib/kredito.ts`) and converted to asset base
+  units (6-decimal mUSDC, 1 unit == $1) when the attestation is signed.
 - **H-1 — bounded lifetime.** The vault rejects any window longer than `MAX_ATTESTATION_TTL`
   (30 days); the signing route mirrors this as `MAX_ATTESTATION_TTL_SECONDS` and rejects out-of-range
   `expiresAt` early.

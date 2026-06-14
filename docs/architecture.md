@@ -42,15 +42,16 @@ Built on **Scaffold-ETH 2** (Yarn-4 monorepo: `packages/nextjs` + `packages/foun
 
 ## The credit → identity → loan flow (`components/kredito/KreditoFlow.tsx`)
 
-Five steps. Steps 1–3 are **live**; steps 4–5 depend on the not-yet-deployed `KreditoVault`.
+Steps 1–4 are **live**; steps 5–6 depend on the not-yet-deployed `KreditoVault`.
 
 | # | Step | What happens | Where |
 |---|------|--------------|-------|
-| 1 | **Onboarding** | Business profile + per-slot document upload (6 evidence types: financials, tax, bank, A/R, debt, legal). Demo borrower archetypes / sample-doc cases preloaded. Connected smart-wallet address = the credit identity. | client |
-| 2 | **Score** | `POST /api/lendsignal/score` runs a **map→reduce** pipeline: one Confidential AI inference per document (section prompts) → a reduce inference → final decision; plus a mock off-chain profile signal. Blended **70 % AI / 30 % mock CRS bureau** → score `0–1000` + risk tier + `eligible` (≥ 750). Persisted to `credit_checks` (results + content hashes, **no raw docs**). Falls back to a deterministic mock (`attested:false`) when `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is unset. | server |
-| 3 | **Certificate / Identity** | (a) `POST /api/lendsignal/attest` — issuer signs an EIP-712 `CreditAttestation`. (b) User signs `mintMessage` (proves wallet control); `POST /api/identity/mint` verifies it (`verifyMessage`, EOA + ERC-1271/6492), checks the Supabase decision is `approved`, then the issuer submits `KreditoController.mint` (Privy-sponsored). Result: a `<label>.kredito.eth` subname the **user owns**, with an **issuer-locked** `kredito.status = approved` + attestation hash. | client + server + onchain |
-| 4 | **Borrow** *(deferred)* | `KreditoVault.borrow(attestation, signature, amount)` — the vault recovers `signer == issuer` onchain and checks score ≥ `minScore`, unexpired, `amount ≤ maxPrincipal`. Disburses an undercollateralized loan; gas sponsored. Repay batches `approve + repay` into one UserOp. **Vault not deployed.** | onchain |
-| 5 | **Liquidity** *(deferred)* | ERC-4626 deposit + ERC-7540 async redeem (`requestRedeem` → keeper `fulfillRedeem` → `claim`). **Vault not deployed.** | onchain |
+| 1 | **Onboarding** | Exactly 5 business-identity fields — legal name (text), country (ISO dropdown), type of enterprise (LLC / Corporation / Sole Proprietorship / Partnership / Nonprofit / Cooperative / Other), tax number, registry number — persisted to `credit_checks` (`legal_name`, `country`, `enterprise_type`, `tax_number`, `registry_number`). No loan-amount, industry, monthly-revenue, or ENS-name field. Plus per-slot document upload (6 evidence types: financials, tax, bank, A/R, debt, legal). Connected smart-wallet address = the credit identity. | client |
+| 2 | **Score** | `POST /api/lendsignal/score` runs a **map→reduce** pipeline: one Confidential AI inference per document (section prompts) → a reduce inference → final decision. The combined score (`0–1000`) **is** the AI score — there is **no** credit-bureau blend, no off-chain profile signal, and no synthetic/mock fallback. Tiers `>=750` low · `600–749` medium · `<600` high; `eligible = score >= 600 && tier != high`. Persisted to `credit_checks` (results + content hashes, **no raw docs**). If `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is missing or any inference fails / returns unparseable output, the route returns a **clear error** — never a fake score. | server |
+| 3 | **Certificate / Identity** | (a) `POST /api/lendsignal/attest` — issuer signs an EIP-712 `CreditAttestation`; its `maxPrincipal` (credit limit) is **derived from the score** (`creditLimitUsd`), not user-entered. (b) User signs `mintMessage` (proves wallet control); `POST /api/identity/mint` verifies it (`verifyMessage`, EOA + ERC-1271/6492), checks the Supabase decision is `approved`, then the issuer submits `KreditoController.mint` (Privy-sponsored). Result: a `<label>.kredito.eth` subname the **user owns**, with an **issuer-locked** `kredito.status = approved` + attestation hash. | client + server + onchain |
+| 4 | **Profile** | Customize the public ENS credit identity (display name, about, avatar, banner, website, email, location, X / GitHub / Telegram / Discord / LinkedIn). Records are written onchain via owner-gated `KreditoResolver.setTexts` (gas-sponsored) and mirrored to Supabase `ens_identities`; a live preview card renders as you type. Public verification at `/identity/<label>` and a `/verify` lookup page. | client + server + onchain |
+| 5 | **Borrow** *(deferred)* | `KreditoVault.borrow(attestation, signature, amount)` — the vault recovers `signer == issuer` onchain and checks score ≥ `minScore`, unexpired, `amount ≤ maxPrincipal`. Disburses an undercollateralized loan; gas sponsored. Repay batches `approve + repay` into one UserOp. **Vault not deployed.** The vault's hardcoded `minScore` is higher than the ≥600 off-chain mint threshold, so the two gates may differ. | onchain |
+| 6 | **Liquidity** *(deferred)* | ERC-4626 deposit + ERC-7540 async redeem (`requestRedeem` → keeper `fulfillRedeem` → `claim`). **Vault not deployed.** | onchain |
 
 ## Contracts (`packages/foundry/contracts`)
 
@@ -116,8 +117,8 @@ Project ref **`rooclfwqvmwehaqmtflp`**. **RLS on**, no anon policies → access 
 
 | Table | Purpose | Privacy note |
 |-------|---------|--------------|
-| `credit_checks` | One row per evaluation: combined/AI/bureau scores, risk tier, `eligible`, content hashes (`attestation_hash`, `bureau_report_hash`, `evidence_digest`), Chainlink inference id, profile fields. | The numeric **score is never selected back to the client** — only the eligibility decision + public attestation hash. |
-| `ens_identities` | Minted `<label>.kredito.eth` records: label, wallet, node, status, attestation hash, mint tx. | — |
+| `credit_checks` | One row per evaluation: `combined_score` (= the AI score), `risk_tier`, content hashes (`attestation_hash`, `evidence_digest`), Chainlink inference id, and the 5 business-identity fields (`legal_name`, `country`, `enterprise_type`, `tax_number`, `registry_number`). No bureau/off-chain columns are written. Eligibility is **recomputed** from `combined_score` + `risk_tier` against `MIN_ELIGIBLE_SCORE` (600), not stored as a flag. | The numeric **score is never selected back to the client** — only the eligibility decision + public attestation hash. |
+| `ens_identities` | Minted `<label>.kredito.eth` records: label, wallet, node, status, attestation hash, mint tx, plus the owner-editable profile records (mirror of the onchain text records). | — |
 | `ai_config` | Admin-managed model + section/reduce system prompts (falls back to code defaults). | — |
 | `profiles` | Business profile metadata. | — |
 
@@ -146,7 +147,7 @@ ERC-4337 smart wallet. All gas is sponsored by Privy's **managed paymaster** dra
 | Live on Sepolia | Built, not deployed |
 |-----------------|---------------------|
 | KreditoController, KreditoResolver, subRegistry, parent `kredito.eth` | KreditoVault (borrow + ERC-4626 + ERC-7540 redeem) |
-| Steps 1–3 of the flow (score, attest, mint identity) | Steps 4–5 (borrow, liquidity) — gated on `NEXT_PUBLIC_KREDITO_VAULT` |
+| Steps 1–4 of the flow (score, attest, mint identity, profile) | Steps 5–6 (borrow, liquidity) — gated on `NEXT_PUBLIC_KREDITO_VAULT` |
 
 Live addresses, deploy commands, and the next-deploy plan: **`docs/deployments.md`**.
 
@@ -175,6 +176,7 @@ Live addresses, deploy commands, and the next-deploy plan: **`docs/deployments.m
 | **Chain = Sepolia** | Privy's bundler + paymaster and ENSv2/Namechain infra run on real testnet, not local anvil. Mainnet is added only for ENS-on-L1 resolution. |
 | **Attestation = EIP-712 signature, not a registry** | The issuer signature is the trust anchor; the vault verifies it onchain (recover == issuer). No certificate registry to deploy; ENS carries the identity. |
 | **Score off-chain only** | The private credit score is sensitive; it stays in Supabase. Only hashes + the eligibility decision are surfaced, and only the attestation hash goes onchain. |
+| **Score = 100% Confidential AI, no fallback** | The score is the AI's TEE-attested decision over the borrower's own documents — no credit-bureau blend, no off-chain profile signal, no synthetic mock. If the key is missing or inference fails, the route errors rather than fabricate a score. |
 | **Confidential AI in a TEE** | Raw financial documents must stay private; the Chainlink Confidential AI Attester runs the model inside an AWS Nitro Enclave and returns a cryptographically attested result. |
 | **One-key issuer (demo)** | The deployer = `ISSUER_ROLE` = vault issuer = app `ISSUER_PRIVATE_KEY` = `kredito.eth` owner — simple for a hackathon. Prod splits cold admin from hot issuer (see `docs/deployments.md`). |
 

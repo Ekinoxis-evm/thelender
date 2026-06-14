@@ -9,3 +9,5 @@ export { CertificateCard } from "./CertificateCard";
 export { FlowStepper } from "./FlowStepper";
 export { NextStepCard } from "./NextStepCard";
 export { FlowShell } from "./FlowShell";
+export { KreditoIdentityCard, IdentityChip } from "./KreditoIdentityCard";
+export type { IdentityCardData } from "./KreditoIdentityCard";

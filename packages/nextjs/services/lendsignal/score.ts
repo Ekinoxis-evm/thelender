@@ -4,7 +4,7 @@
  * synthetic fallback: if a section/reduce inference fails or returns unparseable
  * output, parsing THROWS a clear Error and the caller surfaces it to the user.
  *
- *   >=750 Low · 600..749 Medium · <600 High   ·   eligible = >=750 && tier!=High
+ *   >=750 Low · 600..749 Medium · <600 High   ·   eligible = >=600 && tier!=High
  */
 import type { InferenceSnapshot } from "./confidentialAi";
 import type {
@@ -20,7 +20,7 @@ import type {
 } from "./types";
 import { keccak256, stringToBytes } from "viem";
 
-export const MIN_ELIGIBLE_SCORE = 750;
+export const MIN_ELIGIBLE_SCORE = 600;
 export const CERTIFICATE_VALIDITY_SECONDS = 90 * 24 * 60 * 60; // 90 days
 
 const clampScore = (n: number) => Math.max(0, Math.min(1000, Math.round(n)));

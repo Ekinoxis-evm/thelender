@@ -32,19 +32,20 @@ through Docling preprocessing in the TEE and can take minutes — the demo prefe
 
 1. **MAP** — one Confidential AI inference **per document**, in parallel, each with a section-specific
    prompt (financials / tax / bank / A/R / debt / legal). Each query keeps its own attested request
-   id (surfaced to the UI).
+   id (surfaced to the UI). `parseSectionOutput` **throws a clear Error** if a section returns missing
+   or unparseable output — there is no synthetic fallback.
 2. **REDUCE** — a final inference that weighs the per-section analyses into the overall credit
-   decision.
-3. An off-chain profile signal is computed in parallel (mocked, deterministic) and shown apart — it
-   is **not** blended into the on-chain score.
-4. A **CRS bureau** signal (mock) is computed, then blended:
-   **`combined = (ai * 7000 + bureau * 3000) / 10000`** — i.e. 70% Confidential-AI / 30% bureau
-   (`AI_WEIGHT_BPS` / `BUREAU_WEIGHT_BPS` in `services/lendsignal/score.ts`, mirroring
-   `CreditTypes.sol`).
+   decision. `parseReduceOutput` likewise **throws** on missing/unparseable output.
+
+The combined score **is** the AI score (`combinedScore === aiScore` in
+`services/lendsignal/score.ts`): there is **no** credit-bureau blend, **no** off-chain profile signal,
+and **no** 70/30 weighting. Tiers are `>=750` low · `600–749` medium · `<600` high, and
+`eligible = score >= 600 && tier != high` (`MIN_ELIGIBLE_SCORE = 600`).
 
 The normalized check is persisted to Supabase (`credit_checks`, best-effort — never blocks the
 response). The combined score and risk tier then feed the issuer's EIP-712 attestation (see
-`docs/eip-712-attestation.md`).
+`docs/eip-712-attestation.md`), whose `maxPrincipal` credit limit is derived from the score
+(`creditLimitUsd`).
 
 `attested: true` requires the reduce inference AND at least one section inference to complete inside
 the TEE.
@@ -53,16 +54,16 @@ the TEE.
 
 | Var | Purpose | Default |
 |-----|---------|---------|
-| `CHAINLINK_CONFIDENTIAL_AI_API_KEY` | Secret, server-only. Empty → deterministic mock fallback. | _(unset)_ |
+| `CHAINLINK_CONFIDENTIAL_AI_API_KEY` | Secret, server-only. **Required** — if missing, the score route returns a clear error (no fake score). | _(unset)_ |
 | `CHAINLINK_CONFIDENTIAL_AI_BASE_URL` | Attester base URL (trailing slashes stripped). | `https://confidential-ai-dev-preview.cldev.cloud` |
 | `CHAINLINK_CONFIDENTIAL_AI_MODEL` | Model id. | `gemma4` |
 
-### Mock fallback
+### No mock fallback
 
-When `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is unset, the route returns a **deterministic mock**
-(`fallbackAiResult` / `fallbackOffchain`, marked `attested: false`) keyed off a borrower-strength
-hint, so the full Onboarding → Score → Identity flow works end-to-end without a live key. Demo
-profiles also land on a fixed score band regardless of live-model variance.
+There is **no** synthetic/mock scoring path. If `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is unset, or any
+section/reduce inference fails or returns unparseable output, `POST /api/lendsignal/score` returns a
+**clear error** and the UI surfaces it — the app never fabricates a score. (No `fallbackAiResult`,
+no deterministic mock, no fixed demo score bands.)
 
 Docs/skill: `.agents/skills/chainlink-confidential-ai-attester-skill/SKILL.md` ·
 `https://confidential-ai-dev-preview.cldev.cloud/docs`.

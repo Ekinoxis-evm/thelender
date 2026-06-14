@@ -10,15 +10,18 @@ Built on **Scaffold-ETH 2** (Next.js App Router + Foundry monorepo) with an **AI
 
 ## The flow — credit → identity → loan
 
-A single page (`packages/nextjs/components/kredito/KreditoFlow.tsx`) walks the borrower through five steps:
+A single page (`packages/nextjs/components/kredito/KreditoFlow.tsx`) walks the borrower through the steps:
 
 | # | Step | What happens |
 |---|------|--------------|
-| 1 | **Onboarding** | Business profile + document uploads (financials, tax, bank, A/R, debt schedule, legal). Demo profiles preload docs. |
-| 2 | **Score** | `POST /api/lendsignal/score` — the **Chainlink Confidential AI Attester** analyzes the documents inside a TEE (raw docs never leave the enclave or hit the DB), blended **70/30** with a mock credit bureau into a combined **score (0–1000)** + risk tier + eligibility. Persisted to Supabase `credit_checks` (**results + hashes only**). Falls back to a deterministic mock if `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is unset. |
-| 3 | **Identity** | Issuer signs an **EIP-712 `CreditAttestation`** server-side (`POST /api/lendsignal/attest`), then mints `<label>.kredito.eth`: the user signs the mint message → `POST /api/identity/mint` → `KreditoController.mint(label, wallet, attestationHash)`, issuer-submitted and **Privy-sponsored**. The issuer locks `kredito.status = approved` + the attestation hash; the user owns the name and its editable profile records. |
-| 4 | **Borrow** | `KreditoVault.borrow(attestation, sig, amount)` — the vault verifies the EIP-712 signature **onchain** (signer == issuer), checks score / expiry / max principal, then releases USDC. **Deferred:** the vault is built and tested but **not yet deployed**. |
-| 5 | **Liquidity** | ERC-4626 deposit + **ERC-7540 async redeem** (request → fulfill → claim) for lenders. **Deferred** alongside the vault. |
+| 1 | **Onboarding** | Exactly 5 business-identity fields — legal name, country (ISO dropdown), type of enterprise (LLC / Corporation / Sole Proprietorship / Partnership / Nonprofit / Cooperative / Other), tax number, registry number — plus document uploads (financials, tax, bank, A/R, debt schedule, legal). |
+| 2 | **Score** | `POST /api/lendsignal/score` — the **Chainlink Confidential AI Attester** analyzes the uploaded documents inside a TEE (raw docs never leave the enclave or hit the DB) via a **map → reduce** pipeline (one inference per document → a final decision). The combined **score (0–1000)** *is* the AI score — there is no credit-bureau blend, no off-chain profile signal, and no synthetic fallback. Persisted to Supabase `credit_checks` (**results + hashes only**). If `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is missing or any inference fails/returns unparseable output, the route returns a **clear error** (never a fake score). |
+| 3 | **Certificate** | Issuer signs an **EIP-712 `CreditAttestation`** server-side (`POST /api/lendsignal/attest`) — its `maxPrincipal` (the credit limit) is **derived from the score** (`creditLimitUsd`), not user-entered — then mints `<label>.kredito.eth`: the user signs the mint message → `POST /api/identity/mint` → `KreditoController.mint(label, wallet, attestationHash)`, issuer-submitted and **Privy-sponsored**. The issuer locks `kredito.status = approved` + the attestation hash; the user owns the name and its editable profile records. |
+| 4 | **Profile** | Customize the public ENS credit identity (display name, about, avatar, banner, website, email, location, X / GitHub / Telegram / Discord / LinkedIn). Records are written onchain via `KreditoResolver.setTexts` (gas-sponsored) and mirrored to Supabase `ens_identities`; a live preview card renders as you type. Public verification at `/identity/<label>` and a `/verify` lookup page. |
+| 5 | **Borrow** | `KreditoVault.borrow(attestation, sig, amount)` — the vault verifies the EIP-712 signature **onchain** (signer == issuer), checks score / expiry / max principal, then releases USDC. **Coming soon:** the vault is built and tested but **not yet deployed**. |
+| 6 | **Liquidity** | ERC-4626 deposit + **ERC-7540 async redeem** (request → fulfill → claim) for lenders. **Coming soon** alongside the vault. |
+
+Eligibility for identity minting: tiers are `>=750` low · `600–749` medium · `<600` high; `eligible = score >= 600 AND tier != high` (threshold lowered to 600). Eligibility is **recomputed** from the stored score + tier against `MIN_ELIGIBLE_SCORE` (600), not a persisted flag. The (undeployed) `KreditoVault` still hardcodes a higher `minScore` for `borrow`, so off-chain mint eligibility (≥600) and the future onchain borrow gate may differ; borrow is deferred.
 
 ## Onchain state
 
@@ -99,10 +102,10 @@ cp packages/foundry/.env.example  packages/foundry/.env         # deploy/verify 
 Minimum to run the app:
 - **`NEXT_PUBLIC_PRIVY_APP_ID`** — login/wallets ([dashboard.privy.io](https://dashboard.privy.io), **required at runtime**).
 - **`NEXT_PUBLIC_ALCHEMY_API_KEY`** — RPC ([Alchemy](https://dashboard.alchemy.com)).
-- **Supabase** — `NEXT_PUBLIC_SUPABASE_URL` (project ref `rooclfwqvmwehaqmtflp`) + keys, for `credit_checks`, `ai_config`, and `ens_identities`.
+- **Supabase** — `NEXT_PUBLIC_SUPABASE_URL` (project ref `rooclfwqvmwehaqmtflp`) + keys, for `credit_checks`, `ai_config`, `ens_identities`, and `profiles`.
 - **`NEXT_PUBLIC_KREDITO_CONTROLLER` / `NEXT_PUBLIC_KREDITO_RESOLVER`** — the live ENS contract addresses above.
 
-Server-only (never `NEXT_PUBLIC_`): `CHAINLINK_CONFIDENTIAL_AI_API_KEY` (the TEE attester — omit it and scoring uses a deterministic mock), the issuer key for EIP-712 attestation signing, and `ADMIN_SECRET` (gates the `/admin` AI-config dashboard).
+Server-only (never `NEXT_PUBLIC_`): `CHAINLINK_CONFIDENTIAL_AI_API_KEY` (the TEE attester — **required** for scoring; omit it and the score route returns a clear error rather than a fake score), the issuer key for EIP-712 attestation signing, and `ADMIN_SECRET` (gates the `/admin` AI-config dashboard).
 
 For Privy sponsorship: enable smart wallets + add **Sepolia** to supported networks + add `http://localhost:3000` to allowed origins, and turn on gas-sponsorship credits (see `docs/privy.md`). Every key is documented in `.env.example` (root, master reference) and `docs/rpc.md`.
 
@@ -162,10 +165,10 @@ Skills give the agent *how-to / best-practices* context; they pair with the live
 ```
 packages/
   nextjs/                 # Next.js app
-    app/  components/kredito/KreditoFlow.tsx   # the 5-step credit→identity→loan flow
+    app/  components/kredito/KreditoFlow.tsx   # the credit→identity→profile→loan flow
     app/api/lendsignal/{score,attest}/  app/api/identity/mint/  # scoring + attestation + ENS mint
     app/admin/            # AI-config dashboard (gated by ADMIN_SECRET)
-    services/lendsignal/  # Confidential AI scoring + 70/30 blend
+    services/lendsignal/  # Confidential AI scoring (map→reduce; score == AI score, no blend)
     kredito/  lib/kredito/ # attestation typed-data, vault config, mint helpers
     hooks/scaffold-eth/useSmartWallet.ts  # useSponsoredWrite + useSmartWalletSign
     services/web3/        # Privy config (email + Google), smart-account connector

@@ -75,8 +75,27 @@ ENSv2 token + resolver records.
    `ISSUER_PRIVATE_KEY` against `NEXT_PUBLIC_KREDITO_CONTROLLER` and waits for the receipt. The label
    is normalized with `normalizeLabel` (ENSIP-15) before anything else.
 4. The identity is mirrored into Supabase (`insertIdentity`) with the node, tx hash, and attestation
-   hash. Profile records are sanitized (`sanitizeProfile`) and later written on-chain via the
-   owner-side sponsored `resolver.setTexts` batch.
+   hash. In the subsequent **Profile** step the owner customizes their public records (display name,
+   about, avatar, banner, website, email, location, X / GitHub / Telegram / Discord / LinkedIn); these
+   are sanitized (`sanitizeProfile`), written on-chain via the owner-gated, gas-sponsored
+   `resolver.setTexts` batch, and mirrored back to `ens_identities` for fast card rendering.
+
+## Public verification
+
+The `<label>.kredito.eth` subname **is** the credit credential — anyone can verify it without trusting
+Kredito, because the `kredito.status` record is issuer-locked. The app surfaces this two ways:
+
+- **`/identity/<label>`** — a public verified card for a single identity (name, profile, locked
+  approved status + attestation hash).
+- **`/verify`** — a lookup page (linked as **"Verify"** in the header) to find any identity by label.
+
+The minted identity (name + avatar) is also surfaced app-wide via a header chip
+(`useKreditoIdentity` / `IdentityChip`). This is **Kredito's ENSv2 identity**, separate and unrelated
+to ordinary mainnet `.eth` resolution below.
+
+> The legacy "publish the attestation to your own ENS name" model (`verifyPublished` / a standalone
+> `/ens-page`) has been **removed** — the `<label>.kredito.eth` subname + the `/identity` and `/verify`
+> pages are the only verification surface.
 
 ## Live Sepolia addresses (chainId 11155111)
 
