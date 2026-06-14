@@ -13,16 +13,17 @@ import {
   ShieldCheckIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
-import { CertificateCard, HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
+import { HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
+import { IdentitySection } from "~~/components/kredito/IdentitySection";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
 import { formatUsd } from "~~/kredito/format";
 import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
-import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
+import { type StoredScore, saveScoreResult, toUiRiskTier } from "~~/kredito/scoreStore";
 import { useKreditoWallet } from "~~/kredito/useWallet";
 import type { UploadedDocument } from "~~/services/lendsignal/types";
 import { notification } from "~~/utils/scaffold-eth";
 
-const STEPS = ["Onboarding", "Score", "Certificate", "Borrow", "Liquidity"] as const;
+const STEPS = ["Onboarding", "Score", "Identity", "Borrow", "Liquidity"] as const;
 
 // Each required document gets its own upload slot so the user submits them one by one.
 const REQUIRED_DOCS = [
@@ -382,7 +383,7 @@ export const KreditoFlow = () => {
             step={1}
             eyebrow="Business onboarding"
             title="Become a credit identity"
-            subtitle="Submit your business profile and upload each piece of evidence. The connected wallet becomes the onchain identifier used by the certificate and the lending vault."
+            subtitle="Submit your business profile and upload each piece of evidence. The connected wallet becomes the onchain identifier behind your credit identity and the lending pool."
           />
           {submitting && <AnalyzingProgress steps={analyzingSteps} />}
           <div className={submitting ? "hidden" : "grid lg:grid-cols-3 gap-5"}>
@@ -515,9 +516,9 @@ export const KreditoFlow = () => {
       {/* STEP 2 — SCORE */}
       {step === 1 && result && <ScoreSection result={result} onBack={() => setStep(0)} onIssue={() => advance(2)} />}
 
-      {/* STEP 3 — CERTIFICATE */}
+      {/* STEP 3 — IDENTITY */}
       {step === 2 && result && (
-        <CertificateSection
+        <IdentitySection
           result={result}
           borrower={(address ?? ZERO_ADDR) as `0x${string}`}
           onBack={() => setStep(1)}
@@ -648,8 +649,8 @@ const ScoreSection = ({
             action={<span className="badge badge-ghost badge-sm">not issued yet</span>}
           >
             <p className="text-xs text-base-content/55 mb-3">
-              These three digests (the certificate&apos;s <code>ScoreInputs</code>) are written onchain when you issue
-              the certificate. Raw evidence stays offchain.
+              These three digests (your <code>ScoreInputs</code>) anchor your credit identity onchain — the attestation
+              becomes your financial ID. Raw evidence stays offchain.
             </p>
             <div className="space-y-2.5">
               <div>
@@ -817,125 +818,7 @@ const ScoreSection = ({
           <ArrowLeftIcon className="h-4 w-4" /> Back
         </button>
         <button className="btn btn-primary gap-1" onClick={onIssue} type="button">
-          Issue certificate <ArrowRightIcon className="h-4 w-4" />
-        </button>
-      </div>
-    </>
-  );
-};
-
-const CertificateSection = ({
-  result,
-  borrower,
-  onBack,
-  onNext,
-}: {
-  result: StoredScore;
-  borrower: `0x${string}`;
-  onBack: () => void;
-  onNext: () => void;
-}) => {
-  const cert = toCertificate(result, borrower);
-  const [issuing, setIssuing] = useState(false);
-  const [tx, setTx] = useState<{ txHash: string; explorer: string; action: string } | null>(null);
-
-  const issueOnchain = async () => {
-    setIssuing(true);
-    try {
-      const res = await fetch("/api/lendsignal/issue", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ borrower, scoreInputs: result.scoreInputs }),
-      });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.message || json?.error || "Issuance failed");
-      setTx(json);
-      notification.success(`Certificate ${json.action === "update" ? "updated" : "issued"} onchain`);
-    } catch (e) {
-      notification.error(e instanceof Error ? e.message : "Issuance failed");
-    } finally {
-      setIssuing(false);
-    }
-  };
-
-  return (
-    <>
-      <PageHeader
-        step={3}
-        eyebrow="Credit certificate"
-        title="A soulbound credit identity"
-        subtitle="The protocol issuer mints the blended score as an updateable, soulbound Credit Certificate — only scores, risk tier and content hashes go onchain."
-      />
-      <div className="grid lg:grid-cols-2 gap-6 items-start">
-        <div className="flex justify-center">
-          <CertificateCard cert={cert} />
-        </div>
-        <div className="space-y-4">
-          <Panel eyebrow="Summary" title="What gets published">
-            <ul className="space-y-2 text-sm text-base-content/75">
-              <li className="flex justify-between">
-                <span>Combined score</span>
-                <span className="k-mono font-semibold">{cert.combinedScore}</span>
-              </li>
-              <li className="flex justify-between">
-                <span>Risk tier</span>
-                <RiskBadge tier={cert.riskTier} size="sm" />
-              </li>
-              <li className="flex justify-between">
-                <span>Status</span>
-                <span className="k-mono">{tx ? "ISSUED" : cert.status}</span>
-              </li>
-            </ul>
-          </Panel>
-
-          <Panel eyebrow="Onchain" title="Issue certificate">
-            {tx ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-success text-sm font-medium">
-                  <CheckCircleIcon className="h-5 w-5 shrink-0" />
-                  Certificate {tx.action === "update" ? "updated" : "issued"} onchain
-                </div>
-                <div>
-                  <p className="k-eyebrow mb-1">Transaction</p>
-                  <a
-                    href={tx.explorer}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="link k-mono text-xs break-all inline-flex items-center gap-1"
-                  >
-                    {tx.txHash}
-                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
-                  </a>
-                </div>
-              </div>
-            ) : (
-              <>
-                <p className="text-sm text-base-content/65 mb-3">
-                  The protocol issuer signs <code>issueCertificate</code> with the real attested score and hashes,
-                  minting the soulbound certificate to your wallet. (ENS gating comes later.)
-                </p>
-                <button className="btn btn-primary btn-sm w-full gap-1" onClick={issueOnchain} disabled={issuing}>
-                  {issuing ? (
-                    <>
-                      <span className="loading loading-spinner loading-xs" /> Issuing onchain…
-                    </>
-                  ) : (
-                    <>
-                      <ShieldCheckIcon className="h-4 w-4" /> Issue certificate onchain
-                    </>
-                  )}
-                </button>
-              </>
-            )}
-          </Panel>
-        </div>
-      </div>
-      <div className="flex justify-between mt-6">
-        <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
-          <ArrowLeftIcon className="h-4 w-4" /> Back
-        </button>
-        <button className="btn btn-primary gap-1" onClick={onNext} type="button">
-          Continue to borrow <ArrowRightIcon className="h-4 w-4" />
+          Claim your identity <ArrowRightIcon className="h-4 w-4" />
         </button>
       </div>
     </>
@@ -959,8 +842,8 @@ const BorrowSection = ({
       <PageHeader
         step={4}
         eyebrow="Working-capital loan"
-        title="Borrow against your certificate"
-        subtitle="The vault reads the certificate and pays out an undercollateralized loan. (Lending layer — demo.)"
+        title="Borrow against your credit identity"
+        subtitle="The pool reads your credit identity and pays out an undercollateralized loan at the 12% APY default rate. (Lending layer — demo.)"
       />
       <Panel eyebrow="Offer" title="Loan offer">
         {eligible ? (
@@ -979,7 +862,7 @@ const BorrowSection = ({
             </div>
           </div>
         ) : (
-          <p className="text-sm text-error">Certificate not eligible — improve the score before borrowing.</p>
+          <p className="text-sm text-error">Not eligible — improve the score before borrowing.</p>
         )}
       </Panel>
       <div className="flex justify-between mt-6">
