@@ -275,31 +275,38 @@ export const KreditoFlow = () => {
   };
 
   // Preload the sample documents dropped into public/docs into the evidence slots.
-  const loadSamples = async () => {
+  const loadSamples = async (silent = false) => {
     try {
       const res = await fetch("/api/lendsignal/sample-docs");
       const json = await res.json();
       const sample: UploadedDocument[] = json.documents ?? [];
       if (!sample.length) {
-        notification.error("No sample documents found in public/docs/.");
+        if (!silent) notification.error("No sample documents found in public/docs/.");
         return;
       }
-      const next: Record<string, UploadedDocument | null> = { ...docs };
-      const taken = new Set(Object.keys(next).filter(k => next[k]));
-      for (const d of sample) {
-        let key = detectSlot(d.filename);
-        if (!key || taken.has(key)) key = SLOT_KEYS.find(k => !taken.has(k)) ?? null;
-        if (key) {
-          next[key] = d;
-          taken.add(key);
+      setDocs(prev => {
+        const next: Record<string, UploadedDocument | null> = { ...prev };
+        const taken = new Set(Object.keys(next).filter(k => next[k]));
+        for (const d of sample) {
+          let key = detectSlot(d.filename);
+          if (!key || taken.has(key)) key = SLOT_KEYS.find(k => !taken.has(k)) ?? null;
+          if (key) {
+            next[key] = d;
+            taken.add(key);
+          }
         }
-      }
-      setDocs(next);
-      notification.success(`Loaded ${sample.length} sample document(s)`);
+        return next;
+      });
+      if (!silent) notification.success(`Loaded ${sample.length} sample document(s)`);
     } catch {
-      notification.error("Could not load sample documents.");
+      if (!silent) notification.error("Could not load sample documents.");
     }
   };
+
+  // Preload the mockup documents once so the full exercise is ready to run.
+  useEffect(() => {
+    void loadSamples(true);
+  }, []);
 
   const runCreditCheck = async () => {
     setSubmitting(true);
@@ -381,8 +388,8 @@ export const KreditoFlow = () => {
                 title="Upload documents"
                 action={
                   <div className="flex items-center gap-2">
-                    <button type="button" onClick={loadSamples} className="btn btn-ghost btn-xs gap-1">
-                      <ArrowUpTrayIcon className="h-3.5 w-3.5" /> Load samples
+                    <button type="button" onClick={() => loadSamples()} className="btn btn-ghost btn-xs gap-1">
+                      <ArrowUpTrayIcon className="h-3.5 w-3.5" /> Reload samples
                     </button>
                     <span className="k-mono text-xs text-base-content/55">
                       {uploadedDocs.length}/{REQUIRED_DOCS.length}
