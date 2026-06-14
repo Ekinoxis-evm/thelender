@@ -274,13 +274,19 @@ const DocSlot = ({
   </div>
 );
 
+// Live per-document analysis status, driven by the client polling loop.
+type DocStatus = "queued" | "processing" | "completed" | "failed";
+type DocProgress = { filename: string; status: DocStatus };
+// "pending" → not started yet; "running" → reduce inference in flight; "done" → finished.
+type ReducePhase = "pending" | "running" | "done";
+
 /**
- * Honest loader for the map→reduce pipeline. The per-document inferences run IN PARALLEL inside
- * the TEE and the single request only returns at the very end, so we don't have real per-step
- * status mid-flight. Rather than fake step completion (which looked "done but stuck"), show a calm
- * analyzing state with the live elapsed clock and an accurate 2–4 minute expectation.
+ * REAL per-document progress for the client-orchestrated map→reduce pipeline. Each document's
+ * inference is submitted, then polled individually (queued → processing → completed/failed), so
+ * this shows true live state instead of a time-based fake. The reduce step lights up only once
+ * every document has completed.
  */
-const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
+const AnalyzingProgress = ({ docs, reducePhase }: { docs: DocProgress[]; reducePhase: ReducePhase }) => {
   const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     setElapsed(0);
@@ -289,8 +295,41 @@ const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
   }, []);
 
   const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
-  const docSteps = steps.slice(0, -1); // per-document analyses
-  const reduceStep = steps[steps.length - 1]; // final reduce
+  const completedCount = docs.filter(d => d.status === "completed").length;
+
+  const DocIcon = ({ status }: { status: DocStatus }) => {
+    if (status === "completed")
+      return (
+        <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-success text-success-content">
+          <CheckIcon className="h-3 w-3" />
+        </span>
+      );
+    if (status === "failed")
+      return (
+        <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-error text-error-content">
+          <XMarkIcon className="h-3 w-3" />
+        </span>
+      );
+    if (status === "processing")
+      return (
+        <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-primary/15">
+          <span className="loading loading-spinner loading-xs text-primary" />
+        </span>
+      );
+    // queued
+    return (
+      <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-base-300">
+        <span className="loading loading-spinner loading-xs text-base-content/50" />
+      </span>
+    );
+  };
+
+  const STATUS_LABEL: Record<DocStatus, string> = {
+    queued: "queued",
+    processing: "analyzing…",
+    completed: "done",
+    failed: "failed",
+  };
 
   return (
     <div className="k-card p-6 max-w-2xl mx-auto">
@@ -302,27 +341,52 @@ const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
         <span className="k-mono text-sm text-base-content/60 tabular-nums">{mmss}</span>
       </div>
       <p className="text-xs text-base-content/55 mb-4">
-        Your {docSteps.length} document{docSteps.length === 1 ? "" : "s"} {docSteps.length === 1 ? "is" : "are"}{" "}
-        analyzed privately inside the enclave (in parallel), then reduced to a credit decision. This typically takes{" "}
+        Each of your {docs.length} document{docs.length === 1 ? "" : "s"} is analyzed privately inside the enclave, then
+        reduced to a credit decision. This typically takes{" "}
         <span className="font-medium text-base-content/75">2–4 minutes</span> — keep this tab open.
       </p>
       <div className="h-1.5 w-full overflow-hidden rounded-full bg-base-300 mb-4">
-        <div className="h-full w-1/3 animate-pulse rounded-full bg-primary" />
+        <div
+          className="h-full rounded-full bg-primary transition-all duration-500"
+          style={{ width: `${docs.length ? Math.round((completedCount / docs.length) * 100) : 0}%` }}
+        />
       </div>
       <ul className="space-y-2.5">
-        {docSteps.map(s => (
-          <li key={s} className="flex items-center gap-3 text-sm">
-            <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-primary/15">
-              <span className="loading loading-spinner loading-xs" />
+        {docs.map(d => (
+          <li key={d.filename} className="flex items-center gap-3 text-sm">
+            <DocIcon status={d.status} />
+            <span className={`font-medium truncate ${d.status === "failed" ? "text-error" : ""}`}>{d.filename}</span>
+            <span
+              className={`ml-auto k-mono text-xs shrink-0 ${
+                d.status === "completed"
+                  ? "text-success"
+                  : d.status === "failed"
+                    ? "text-error"
+                    : "text-base-content/50"
+              }`}
+            >
+              {STATUS_LABEL[d.status]}
             </span>
-            <span className="font-medium">{s}</span>
           </li>
         ))}
         <li className="flex items-center gap-3 text-sm">
-          <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-base-300 text-base-content/55 text-xs">
-            ∑
+          {reducePhase === "done" ? (
+            <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-success text-success-content">
+              <CheckIcon className="h-3 w-3" />
+            </span>
+          ) : reducePhase === "running" ? (
+            <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-primary/15">
+              <span className="loading loading-spinner loading-xs text-primary" />
+            </span>
+          ) : (
+            <span className="grid place-items-center h-5 w-5 rounded-full shrink-0 bg-base-300 text-base-content/55 text-xs">
+              ∑
+            </span>
+          )}
+          <span className={reducePhase === "pending" ? "text-base-content/55" : "font-medium"}>
+            Reduce to a final decision
+            {reducePhase === "pending" ? " — runs once all documents finish" : reducePhase === "running" ? "…" : ""}
           </span>
-          <span className="text-base-content/55">{reduceStep} — runs once all documents finish</span>
         </li>
       </ul>
     </div>
@@ -342,7 +406,9 @@ export const KreditoFlow = () => {
   const [profile, setProfile] = useState<FormProfile>(EMPTY_PROFILE);
   const [docs, setDocs] = useState<Record<string, UploadedDocument | null>>({});
   const [submitting, setSubmitting] = useState(false);
-  const [analyzingSteps, setAnalyzingSteps] = useState<string[]>([]);
+  // REAL per-document analysis state + the reduce phase, driving AnalyzingProgress live.
+  const [docProgress, setDocProgress] = useState<DocProgress[]>([]);
+  const [reducePhase, setReducePhase] = useState<ReducePhase>("pending");
   const [result, setResult] = useState<StoredScore | null>(null);
   // The issuer-signed attestation, produced in the Certificate step and consumed by Borrow.
   const [att, setAtt] = useState<SignedAttestation | null>(null);
@@ -376,6 +442,10 @@ export const KreditoFlow = () => {
     }
   };
 
+  // Client-orchestrated map→reduce: (1) submit one inference per doc, (2) poll each to a terminal
+  // state with REAL per-doc UI, (3) reduce + persist via /finish. No single request runs for minutes,
+  // so neither the UI spinner nor the Vercel serverless timeout can stall. On any failure we surface
+  // a clear error and stop — the form + uploads are kept so the user can retry.
   const runCreditCheck = async () => {
     if (
       !profile.legalName.trim() ||
@@ -391,28 +461,104 @@ export const KreditoFlow = () => {
       notification.error("Upload at least one business document to run the credit check.");
       return;
     }
+
+    const apiProfile = {
+      legalName: profile.legalName,
+      country: profile.country,
+      enterpriseType: profile.enterpriseType,
+      taxNumber: profile.taxNumber,
+      registryNumber: profile.registryNumber,
+    };
+
     setSubmitting(true);
-    const steps = uploadedDocs.map(d => `Analyze ${d.filename}`);
-    steps.push("Reduce to a final decision");
-    setAnalyzingSteps(steps);
+    setReducePhase("pending");
+    setDocProgress(uploadedDocs.map(d => ({ filename: d.filename, status: "queued" })));
+
     try {
-      const apiProfile = {
-        legalName: profile.legalName,
-        country: profile.country,
-        enterpriseType: profile.enterpriseType,
-        taxNumber: profile.taxNumber,
-        registryNumber: profile.registryNumber,
-      };
-      const res = await fetch("/api/lendsignal/score", {
+      // --- Step 1: submit one inference per document (fast; returns ids only) ---
+      const submitRes = await fetch("/api/lendsignal/score/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: apiProfile, borrower: address, documents: uploadedDocs }),
+        body: JSON.stringify({ profile: apiProfile, documents: uploadedDocs }),
       });
-      const json = await res.json();
-      if (!res.ok) throw new Error(json?.message || json?.error || "Scoring failed");
+      const submitJson = await submitRes.json();
+      if (!submitRes.ok)
+        throw new Error(submitJson?.message || submitJson?.error || "Failed to submit credit analysis");
+      const submitted = submitJson.docs as {
+        filename: string;
+        type: string;
+        prompt: string;
+        systemPrompt: string;
+        inferenceId: string;
+      }[];
 
-      setResult(json as StoredScore);
-      saveScoreResult(json);
+      // --- Step 2: poll each inference until completed/failed. ~6-min overall safety cap. ---
+      const POLL_MS = 3000;
+      const DEADLINE = Date.now() + 6 * 60 * 1000;
+      const setStatus = (filename: string, status: DocStatus) =>
+        setDocProgress(prev => prev.map(d => (d.filename === filename ? { ...d, status } : d)));
+
+      const pending = new Set(submitted.map(d => d.filename));
+      const failed: string[] = [];
+
+      while (pending.size > 0) {
+        if (Date.now() > DEADLINE) {
+          throw new Error("Credit analysis timed out — the documents didn't finish in time. Please retry.");
+        }
+        await new Promise(r => setTimeout(r, POLL_MS));
+        await Promise.all(
+          submitted
+            .filter(d => pending.has(d.filename))
+            .map(async d => {
+              try {
+                const r = await fetch(`/api/lendsignal/inference/${d.inferenceId}`);
+                const snap = await r.json();
+                if (!r.ok) return; // transient lookup error — keep polling
+                const status = snap?.status as string | undefined;
+                if (status === "completed") {
+                  setStatus(d.filename, "completed");
+                  pending.delete(d.filename);
+                } else if (status === "failed") {
+                  setStatus(d.filename, "failed");
+                  pending.delete(d.filename);
+                  failed.push(d.filename);
+                } else {
+                  setStatus(d.filename, "processing");
+                }
+              } catch {
+                // transient network error — keep polling
+              }
+            }),
+        );
+      }
+
+      if (failed.length > 0) {
+        throw new Error(`Credit analysis failed for: ${failed.join(", ")}. Please retry.`);
+      }
+
+      // --- Step 3: reduce + persist, then surface the StoredScore ---
+      setReducePhase("running");
+      const finishRes = await fetch("/api/lendsignal/score/finish", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          profile: apiProfile,
+          borrower: address,
+          docs: submitted.map(d => ({
+            filename: d.filename,
+            type: d.type,
+            prompt: d.prompt,
+            systemPrompt: d.systemPrompt,
+            inferenceId: d.inferenceId,
+          })),
+        }),
+      });
+      const finishJson = await finishRes.json();
+      if (!finishRes.ok) throw new Error(finishJson?.message || finishJson?.error || "Scoring failed");
+
+      setReducePhase("done");
+      setResult(finishJson as StoredScore);
+      saveScoreResult(finishJson);
       notification.success("Confidential credit check complete");
       advance(1);
     } catch (e) {
@@ -435,7 +581,7 @@ export const KreditoFlow = () => {
             title="Become a credit identity"
             subtitle="Submit your business profile and upload each piece of evidence. The connected wallet becomes the onchain identifier used by the certificate and the lending vault."
           />
-          {submitting && <AnalyzingProgress steps={analyzingSteps} />}
+          {submitting && <AnalyzingProgress docs={docProgress} reducePhase={reducePhase} />}
           <div className={submitting ? "hidden" : "grid lg:grid-cols-3 gap-5"}>
             <div className="lg:col-span-2 space-y-5">
               <Panel eyebrow="Business profile" title="Company information">
