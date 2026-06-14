@@ -19,9 +19,8 @@ import {
 } from "@heroicons/react/24/outline";
 import { CertificateCard, HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
-import { useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
+import { useSmartWalletSign, useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
 import { toTypedMessage, typedData } from "~~/kredito/attestation";
-import { RESOLVER_ABI, buildSetTextCalls, getResolver, namehash, normalize } from "~~/kredito/ens";
 import { formatUsd } from "~~/kredito/format";
 import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
 import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
@@ -35,6 +34,7 @@ import {
   type VaultLoan,
   sepoliaTxUrl,
 } from "~~/kredito/vault";
+import { fullName, mintMessage, normalizeLabel } from "~~/lib/kredito";
 import type { UploadedDocument } from "~~/services/lendsignal/types";
 import { getParsedError, notification } from "~~/utils/scaffold-eth";
 
@@ -853,6 +853,17 @@ const ScoreSection = ({
   );
 };
 
+// Best-effort seed for the subname label from a typed ENS name (strip the TLD); "" on any failure
+// so an un-normalizable input never throws during render.
+const safeLabel = (ensName: string): string => {
+  const raw = (ensName || "").trim().split(".")[0] ?? "";
+  try {
+    return raw ? normalizeLabel(raw) : "";
+  } catch {
+    return "";
+  }
+};
+
 const CertificateSection = ({
   result,
   borrower,
@@ -893,49 +904,38 @@ const CertificateSection = ({
     };
   }, [att]);
 
-  const { writeContractSponsored } = useSponsoredWrite();
-  const [publishing, setPublishing] = useState(false);
-  const [publishTx, setPublishTx] = useState<`0x${string}` | null>(null);
-  const ens = ensName.trim();
+  const signMessage = useSmartWalletSign();
+  const [label, setLabel] = useState(() => safeLabel(ensName));
+  const [minting, setMinting] = useState(false);
+  const [minted, setMinted] = useState<{ label: string; txHash: `0x${string}` } | null>(null);
 
-  // Publish the signed attestation to the business's ENS name as text records on
-  // Sepolia. The smart wallet must OWN the name (and a resolver must be set), or the
-  // resolver's setText reverts — surfaced as a clear error below.
-  const publishToEns = async () => {
-    if (!att || !ens) return;
-    setPublishing(true);
+  // Mint the borrower's `<label>.kredito.eth` ENSv2 subname as the onchain credit certificate.
+  // The user signs a message proving wallet control; the backend issuer (which holds ISSUER_ROLE)
+  // submits the actual mint and Privy sponsors that gas. Gated server-side on the approved decision.
+  const mintIdentity = async () => {
+    let normalized: string;
     try {
-      const resolver = await getResolver(ens);
-      if (!resolver) {
-        notification.error(
-          `No resolver for ${ens} on Sepolia. Register this name on Sepolia and set a Public Resolver first.`,
-        );
-        return;
-      }
-      const node = namehash(normalize(ens));
-      const calls = buildSetTextCalls(node, {
-        ...att.attestation,
-        issuer: att.issuer,
-        signature: att.signature,
-      });
-      const hash = await writeContractSponsored({
-        address: resolver,
-        abi: RESOLVER_ABI,
-        functionName: "multicall",
-        args: [calls],
-      });
-      setPublishTx(hash);
-      notification.success(`Published credit identity to ${ens}`);
+      normalized = normalizeLabel(label);
     } catch (e) {
-      const message = e instanceof Error ? e.message : "Publish failed";
-      const reverted = /revert|execution reverted|not authori|unauthor|owner/i.test(message);
-      notification.error(
-        reverted
-          ? `Publish reverted — the connected smart wallet must own ${ens} on Sepolia (and its resolver).`
-          : message,
-      );
+      notification.error((e as Error).message);
+      return;
+    }
+    setMinting(true);
+    try {
+      const signature = await signMessage(mintMessage(borrower, normalized));
+      const res = await fetch("/api/identity/mint", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: borrower, label: normalized, signature }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || json?.message || "Mint failed");
+      setMinted({ label: normalized, txHash: json.txHash });
+      notification.success(`Minted ${fullName(normalized)}`);
+    } catch (e) {
+      notification.error(e instanceof Error ? e.message : "Mint failed");
     } finally {
-      setPublishing(false);
+      setMinting(false);
     }
   };
 
@@ -980,9 +980,9 @@ const CertificateSection = ({
     <>
       <PageHeader
         step={3}
-        eyebrow="Credit certificate"
-        title="An issuer-signed attestation"
-        subtitle="The protocol issuer signs an EIP-712 attestation over your score. The lending vault verifies the signature onchain (recovers signer == issuer) to gate the loan — the borrower can't forge it, and no certificate registry is needed. Your ENS name is the identity."
+        eyebrow="Credit identity"
+        title="Sign your attestation, mint your identity"
+        subtitle="The protocol issuer signs an EIP-712 attestation over your score (the vault verifies it onchain to gate the loan). Then mint your own .kredito.eth subname as the credit certificate — the issuer writes a locked approved status, and you own the name."
       />
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         <div className="flex justify-center">
@@ -1056,59 +1056,73 @@ const CertificateSection = ({
             )}
           </Panel>
 
-          {/* Step 2 — publish the signed attestation to the business's ENS name (Sepolia). */}
-          <Panel eyebrow="ENS credit identity · Sepolia" title="Publish to ENS">
-            {att ? (
+          {/* Mint the *.kredito.eth credit identity (ENSv2 subname) — the onchain certificate. */}
+          <Panel eyebrow="ENS credit identity · Sepolia" title="Mint your kredito.eth identity">
+            {!att ? (
+              <p className="text-sm text-base-content/55">Sign the attestation above first, then mint your identity.</p>
+            ) : minted ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm font-medium text-success">
+                  <CheckCircleIcon className="h-5 w-5" /> Minted{" "}
+                  <span className="k-mono">{fullName(minted.label)}</span>
+                </div>
+                <p className="text-sm text-base-content/65">
+                  Your onchain credit identity is live. The issuer-locked <code>kredito.status</code> record reads{" "}
+                  <span className="k-mono">approved</span> — you own the name and can edit your profile records, but not
+                  the status.
+                </p>
+                <div>
+                  <p className="k-eyebrow mb-1">Mint transaction</p>
+                  <HashChip value={minted.txHash} lead={10} tail={8} />
+                </div>
+                <a
+                  href={sepoliaTxUrl(minted.txHash)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="link text-sm inline-flex items-center gap-1"
+                >
+                  View on explorer
+                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+                </a>
+              </div>
+            ) : (
               <div className="space-y-3">
                 <p className="text-sm text-base-content/65">
-                  Publish the signed attestation as text records on{" "}
-                  {ens ? <span className="k-mono font-medium">{ens}</span> : "your ENS name"}. Anyone can then look it
-                  up and verify the score — ENS is the identity, the issuer signature is the trust.
+                  Mint a <span className="k-mono">{fullName("yourname")}</span> subname as your credit certificate. The
+                  approved status + attestation hash are written by the issuer and locked onchain; you own the name.
                 </p>
-                {!ens && (
-                  <div className="rounded-field bg-warning/10 text-warning text-xs px-3 py-2">
-                    No ENS name set on the onboarding form. Go back and enter your business&apos;s ENS name to publish.
+                <label className="form-control">
+                  <span className="k-eyebrow mb-1">Choose your label</span>
+                  <div className="join">
+                    <input
+                      className="input input-bordered input-sm join-item flex-1 k-mono"
+                      placeholder="acme"
+                      value={label}
+                      onChange={e => setLabel(e.target.value)}
+                    />
+                    <span className="btn btn-sm btn-disabled join-item k-mono no-animation">.kredito.eth</span>
                   </div>
-                )}
+                </label>
                 <button
                   className="btn btn-primary btn-sm w-full gap-1"
-                  onClick={publishToEns}
-                  disabled={publishing || !ens}
+                  onClick={mintIdentity}
+                  disabled={minting || !label.trim()}
                 >
-                  {publishing ? (
+                  {minting ? (
                     <>
-                      <span className="loading loading-spinner loading-xs" /> Publishing…
+                      <span className="loading loading-spinner loading-xs" /> Minting…
                     </>
                   ) : (
                     <>
-                      <GlobeAltIcon className="h-4 w-4" /> Publish to ENS (Sepolia)
+                      <GlobeAltIcon className="h-4 w-4" /> Mint{" "}
+                      {safeLabel(label) ? <span className="k-mono">{fullName(safeLabel(label))}</span> : "identity"}
                     </>
                   )}
                 </button>
-                {publishTx && (
-                  <div className="space-y-2">
-                    <div>
-                      <p className="k-eyebrow mb-1">Publish transaction</p>
-                      <HashChip value={publishTx} lead={10} tail={8} />
-                    </div>
-                    <a
-                      href={`/ens?name=${encodeURIComponent(ens)}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="link text-sm inline-flex items-center gap-1"
-                    >
-                      Verify on the ENS page
-                      <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
-                    </a>
-                  </div>
-                )}
                 <p className="text-xs text-base-content/50">
-                  The connected smart wallet must own this name on Sepolia and have a Public Resolver set, otherwise the
-                  publish transaction reverts. The write is gas-sponsored.
+                  You sign a message to prove wallet control; the issuer submits the mint and Privy sponsors the gas.
                 </p>
               </div>
-            ) : (
-              <p className="text-sm text-base-content/55">Sign the attestation above first, then publish it to ENS.</p>
             )}
           </Panel>
         </div>
