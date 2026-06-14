@@ -557,8 +557,8 @@ export const KreditoFlow = () => {
         />
       )}
 
-      {/* STEP 5 — LIQUIDITY (demo) */}
-      {step === 4 && <LiquiditySection onBack={() => setStep(3)} />}
+      {/* STEP 5 — LIQUIDITY (ERC-4626 + ERC-7540 async redeem) */}
+      {step === 4 && <LiquiditySection borrower={(address ?? ZERO_ADDR) as `0x${string}`} onBack={() => setStep(3)} />}
     </div>
   );
 };
@@ -1139,7 +1139,7 @@ const BorrowSection = ({
   const { data: liquidity, refetch: refetchLiquidity } = useReadContract({
     address: vault,
     abi: VAULT_ABI,
-    functionName: "liquidity",
+    functionName: "idleLiquidity",
     chainId: VAULT_CHAIN_ID,
     query: { enabled: configured },
   });
@@ -1424,31 +1424,429 @@ const BorrowSection = ({
   );
 };
 
-const LiquiditySection = ({ onBack }: { onBack: () => void }) => (
-  <>
-    <PageHeader
-      step={5}
-      eyebrow="Liquidity & default fund"
-      title="Where the money comes from"
-      subtitle="Liquidity providers fund the vault; origination fees build a reserve that covers defaults. (Liquidity layer — demo.)"
-    />
-    <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-      {[
-        { label: "Vault liquidity", value: formatUsd(DEMO_VAULT.liquidityUsd, true) },
-        { label: "Default reserve", value: formatUsd(DEMO_VAULT.reserveUsd, true) },
-        { label: "Outstanding", value: formatUsd(DEMO_VAULT.totalOutstandingUsd, true) },
-        { label: "Origination fee", value: `${DEMO_VAULT.originationFeeBps / 100}%` },
-      ].map(s => (
-        <div key={s.label} className="k-card p-5">
-          <p className="k-eyebrow mb-1">{s.label}</p>
-          <p className="k-mono text-2xl font-semibold">{s.value}</p>
+const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBack: () => void }) => {
+  const configured = KREDITO_VAULT_ADDRESS.length > 0;
+  const vault = configured ? (KREDITO_VAULT_ADDRESS as `0x${string}`) : undefined;
+  const hasLp = configured && borrower !== ZERO_ADDR;
+  const { writeContractSponsored, sendCalls } = useSponsoredWrite();
+
+  const read = { address: vault, abi: VAULT_ABI, chainId: VAULT_CHAIN_ID } as const;
+
+  const { data: assetAddr } = useReadContract({ ...read, functionName: "asset", query: { enabled: configured } });
+  const { data: decimalsData } = useReadContract({
+    address: assetAddr,
+    abi: ERC20_ABI,
+    functionName: "decimals",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: !!assetAddr },
+  });
+  const { data: symbolData } = useReadContract({
+    address: assetAddr,
+    abi: ERC20_ABI,
+    functionName: "symbol",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: !!assetAddr },
+  });
+  const { data: walletBal, refetch: refetchWallet } = useReadContract({
+    address: assetAddr,
+    abi: ERC20_ABI,
+    functionName: "balanceOf",
+    args: [borrower],
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: !!assetAddr && hasLp },
+  });
+  const { data: tvl, refetch: refetchTvl } = useReadContract({
+    ...read,
+    functionName: "totalAssets",
+    query: { enabled: configured },
+  });
+  const { data: idle, refetch: refetchIdle } = useReadContract({
+    ...read,
+    functionName: "idleLiquidity",
+    query: { enabled: configured },
+  });
+  const { data: lent } = useReadContract({ ...read, functionName: "totalOutstanding", query: { enabled: configured } });
+  const { data: shares, refetch: refetchShares } = useReadContract({
+    ...read,
+    functionName: "balanceOf",
+    args: [borrower],
+    query: { enabled: hasLp },
+  });
+  const { data: positionValue } = useReadContract({
+    ...read,
+    functionName: "convertToAssets",
+    args: [typeof shares === "bigint" ? shares : 0n],
+    query: { enabled: hasLp && typeof shares === "bigint" && shares > 0n },
+  });
+  const { data: pendingShares, refetch: refetchPending } = useReadContract({
+    ...read,
+    functionName: "pendingRedeemRequest",
+    args: [0n, borrower],
+    query: { enabled: hasLp },
+  });
+  const { data: claimableShares, refetch: refetchClaimable } = useReadContract({
+    ...read,
+    functionName: "claimableRedeemRequest",
+    args: [0n, borrower],
+    query: { enabled: hasLp },
+  });
+  const { data: pendingValue } = useReadContract({
+    ...read,
+    functionName: "convertToAssets",
+    args: [typeof pendingShares === "bigint" ? pendingShares : 0n],
+    query: { enabled: hasLp && typeof pendingShares === "bigint" && pendingShares > 0n },
+  });
+  const { data: claimableValue } = useReadContract({
+    ...read,
+    functionName: "convertToAssets",
+    args: [typeof claimableShares === "bigint" ? claimableShares : 0n],
+    query: { enabled: hasLp && typeof claimableShares === "bigint" && claimableShares > 0n },
+  });
+  const { data: vaultOwner } = useReadContract({ ...read, functionName: "owner", query: { enabled: configured } });
+
+  const dec = typeof decimalsData === "number" ? decimalsData : 6;
+  const sym = typeof symbolData === "string" ? symbolData : "mUSDC";
+  const usd = (v: unknown) => formatUsd(typeof v === "bigint" ? Number(formatUnits(v, dec)) : 0);
+  const sharesBig = typeof shares === "bigint" ? shares : 0n;
+  const positionBig = typeof positionValue === "bigint" ? positionValue : 0n;
+  const pendingBig = typeof pendingShares === "bigint" ? pendingShares : 0n;
+  const claimableBig = typeof claimableShares === "bigint" ? claimableShares : 0n;
+  const isOwner = !!vaultOwner && String(vaultOwner).toLowerCase() === borrower.toLowerCase();
+
+  const [amount, setAmount] = useState("");
+  const [redeemAmount, setRedeemAmount] = useState("");
+  const [busy, setBusy] = useState<"" | "supply" | "request" | "cancel" | "claim" | "fulfill">("");
+
+  const refetchAll = () => {
+    void refetchWallet();
+    void refetchTvl();
+    void refetchIdle();
+    void refetchShares();
+    void refetchPending();
+    void refetchClaimable();
+  };
+
+  const supply = async () => {
+    if (!vault || !assetAddr) return;
+    let amt: bigint;
+    try {
+      amt = parseUnits((amount || "0").replace(/,/g, ""), dec);
+    } catch {
+      notification.error("Invalid amount.");
+      return;
+    }
+    if (amt <= 0n) {
+      notification.error("Enter an amount to supply.");
+      return;
+    }
+    setBusy("supply");
+    try {
+      // Atomic approve + deposit in one sponsored UserOperation (ERC-4626 sync deposit).
+      const approveData = encodeFunctionData({ abi: ERC20_ABI, functionName: "approve", args: [vault, amt] });
+      const depositData = encodeFunctionData({ abi: VAULT_ABI, functionName: "deposit", args: [amt, borrower] });
+      await sendCalls([
+        { to: assetAddr, data: approveData },
+        { to: vault, data: depositData },
+      ]);
+      notification.success(`Supplied ${amount} ${sym} to the vault`);
+      setAmount("");
+      refetchAll();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  // Async redeem: requestRedeem escrows shares; the keeper fulfills as liquidity frees; then claim.
+  const requestRedeem = async () => {
+    if (!vault || positionBig <= 0n || sharesBig <= 0n) return;
+    // Convert the asset-denominated input to shares pro-rata (blank = full position).
+    let reqShares = sharesBig;
+    const trimmed = (redeemAmount || "").replace(/,/g, "").trim();
+    if (trimmed) {
+      let amtAssets: bigint;
+      try {
+        amtAssets = parseUnits(trimmed, dec);
+      } catch {
+        notification.error("Invalid amount.");
+        return;
+      }
+      reqShares = (amtAssets * sharesBig) / positionBig;
+      if (reqShares > sharesBig) reqShares = sharesBig;
+    }
+    if (reqShares <= 0n) {
+      notification.error("Amount too small.");
+      return;
+    }
+    setBusy("request");
+    try {
+      await writeContractSponsored({
+        address: vault,
+        abi: VAULT_ABI,
+        functionName: "requestRedeem",
+        args: [reqShares, borrower, borrower],
+      });
+      notification.success("Redeem requested — awaiting keeper fulfillment");
+      setRedeemAmount("");
+      refetchAll();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const cancelRedeem = async () => {
+    if (!vault || pendingBig <= 0n) return;
+    setBusy("cancel");
+    try {
+      await writeContractSponsored({
+        address: vault,
+        abi: VAULT_ABI,
+        functionName: "cancelRedeemRequest",
+        args: [pendingBig, borrower],
+      });
+      notification.success("Pending redeem cancelled — shares returned");
+      refetchAll();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const claimRedeem = async () => {
+    if (!vault || claimableBig <= 0n) return;
+    setBusy("claim");
+    try {
+      await writeContractSponsored({
+        address: vault,
+        abi: VAULT_ABI,
+        functionName: "redeem",
+        args: [claimableBig, borrower, borrower],
+      });
+      notification.success("Claimed — assets returned to your wallet");
+      refetchAll();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  // Keeper/owner action: move a controller's pending redeem to claimable (locks rate, reserves assets).
+  const fulfill = async () => {
+    if (!vault || pendingBig <= 0n) return;
+    setBusy("fulfill");
+    try {
+      await writeContractSponsored({
+        address: vault,
+        abi: VAULT_ABI,
+        functionName: "fulfillRedeem",
+        args: [borrower, pendingBig],
+      });
+      notification.success("Redeem fulfilled — now claimable");
+      refetchAll();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        step={5}
+        eyebrow="Liquidity · ERC-4626 + ERC-7540"
+        title="Provide liquidity to the vault"
+        subtitle="LPs supply the asset and receive vault shares (ERC-4626). Because capital is lent out, redemptions are asynchronous (ERC-7540): request → the keeper fulfills as liquidity frees → claim. Gas is sponsored."
+      />
+
+      {!configured ? (
+        <Panel eyebrow="Onchain" title="Vault not configured">
+          <p className="text-sm text-base-content/70">
+            Deploy the vault and set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to enable liquidity provision:
+          </p>
+          <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2 mt-2">
+            yarn deploy --file DeployKreditoVaultV2.s.sol --network sepolia
+          </code>
+        </Panel>
+      ) : (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="k-card p-5">
+              <p className="k-eyebrow mb-1">Total assets</p>
+              <p className="k-mono text-2xl font-semibold">{usd(tvl)}</p>
+            </div>
+            <div className="k-card p-5">
+              <p className="k-eyebrow mb-1">Idle (lendable)</p>
+              <p className="k-mono text-2xl font-semibold">{usd(idle)}</p>
+            </div>
+            <div className="k-card p-5">
+              <p className="k-eyebrow mb-1">Lent out</p>
+              <p className="k-mono text-2xl font-semibold">{usd(lent)}</p>
+            </div>
+            <div className="k-card p-5">
+              <p className="k-eyebrow mb-1">Your position</p>
+              <p className="k-mono text-2xl font-semibold">{usd(positionBig)}</p>
+            </div>
+          </div>
+
+          <div className="grid lg:grid-cols-2 gap-4 items-start">
+            {/* Supply */}
+            <Panel eyebrow="Supply · ERC-4626" title="Provide liquidity">
+              <label className="block">
+                <span className="k-eyebrow">Amount ({sym})</span>
+                <div className="mt-1 flex items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3 focus-within:border-primary transition-colors">
+                  <input
+                    inputMode="decimal"
+                    value={amount}
+                    onChange={e => setAmount(e.target.value)}
+                    placeholder="0"
+                    className="w-full bg-transparent py-2.5 outline-none text-sm k-mono"
+                  />
+                  <button
+                    type="button"
+                    className="text-xs link shrink-0"
+                    onClick={() => setAmount(typeof walletBal === "bigint" ? formatUnits(walletBal, dec) : "")}
+                  >
+                    Max {usd(walletBal)}
+                  </button>
+                </div>
+              </label>
+              <button
+                className="btn btn-primary btn-sm w-full gap-1 mt-3"
+                onClick={supply}
+                disabled={busy !== "" || !hasLp}
+                type="button"
+              >
+                {busy === "supply" ? (
+                  <>
+                    <span className="loading loading-spinner loading-xs" /> Supplying…
+                  </>
+                ) : (
+                  <>
+                    <BanknotesIcon className="h-4 w-4" /> Supply {sym} (sponsored)
+                  </>
+                )}
+              </button>
+              <p className="text-xs text-base-content/50 mt-2">Batches approve + deposit into one sponsored call.</p>
+            </Panel>
+
+            {/* Async redeem */}
+            <Panel eyebrow="Redeem · ERC-7540 async" title="Withdraw liquidity">
+              {claimableBig > 0n && (
+                <div className="rounded-field bg-success/10 px-3 py-2 mb-3">
+                  <p className="text-sm font-medium text-success">Claimable: {usd(claimableValue)}</p>
+                  <button
+                    className="btn btn-success btn-sm w-full gap-1 mt-2"
+                    onClick={claimRedeem}
+                    disabled={busy !== ""}
+                    type="button"
+                  >
+                    {busy === "claim" ? (
+                      <>
+                        <span className="loading loading-spinner loading-xs" /> Claiming…
+                      </>
+                    ) : (
+                      <>Claim {usd(claimableValue)}</>
+                    )}
+                  </button>
+                </div>
+              )}
+
+              {pendingBig > 0n ? (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-base-content/70">Pending redeem</span>
+                    <span className="k-mono font-medium">{usd(pendingValue)}</span>
+                  </div>
+                  <p className="text-xs text-base-content/55">
+                    Waiting for the keeper to fulfill as borrowers repay and liquidity frees up.
+                  </p>
+                  <button
+                    className="btn btn-outline btn-sm w-full"
+                    onClick={cancelRedeem}
+                    disabled={busy !== ""}
+                    type="button"
+                  >
+                    {busy === "cancel" ? (
+                      <>
+                        <span className="loading loading-spinner loading-xs" /> Cancelling…
+                      </>
+                    ) : (
+                      <>Cancel pending request</>
+                    )}
+                  </button>
+                  {isOwner && (
+                    <button
+                      className="btn btn-secondary btn-sm w-full"
+                      onClick={fulfill}
+                      disabled={busy !== ""}
+                      type="button"
+                    >
+                      {busy === "fulfill" ? (
+                        <>
+                          <span className="loading loading-spinner loading-xs" /> Fulfilling…
+                        </>
+                      ) : (
+                        <>Fulfill now (keeper)</>
+                      )}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <>
+                  <label className="block">
+                    <span className="k-eyebrow">Amount ({sym}) — blank = full position</span>
+                    <div className="mt-1 flex items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3 focus-within:border-primary transition-colors">
+                      <input
+                        inputMode="decimal"
+                        value={redeemAmount}
+                        onChange={e => setRedeemAmount(e.target.value)}
+                        placeholder={positionBig > 0n ? formatUnits(positionBig, dec) : "0"}
+                        className="w-full bg-transparent py-2.5 outline-none text-sm k-mono"
+                      />
+                      <button
+                        type="button"
+                        className="text-xs link shrink-0"
+                        onClick={() => setRedeemAmount(positionBig > 0n ? formatUnits(positionBig, dec) : "")}
+                      >
+                        Max {usd(positionBig)}
+                      </button>
+                    </div>
+                  </label>
+                  <button
+                    className="btn btn-primary btn-sm w-full gap-1 mt-3"
+                    onClick={requestRedeem}
+                    disabled={busy !== "" || positionBig <= 0n}
+                    type="button"
+                  >
+                    {busy === "request" ? (
+                      <>
+                        <span className="loading loading-spinner loading-xs" /> Requesting…
+                      </>
+                    ) : (
+                      <>Request redeem</>
+                    )}
+                  </button>
+                  <p className="text-xs text-base-content/50 mt-2">
+                    Shares are escrowed now; the keeper fulfills, then you claim.
+                  </p>
+                </>
+              )}
+            </Panel>
+          </div>
         </div>
-      ))}
-    </div>
-    <div className="flex justify-between mt-6">
-      <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
-        <ArrowLeftIcon className="h-4 w-4" /> Back
-      </button>
-    </div>
-  </>
-);
+      )}
+
+      <div className="flex justify-between mt-6">
+        <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
+          <ArrowLeftIcon className="h-4 w-4" /> Back
+        </button>
+      </div>
+    </>
+  );
+};
