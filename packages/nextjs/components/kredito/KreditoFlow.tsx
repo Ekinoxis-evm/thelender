@@ -11,12 +11,15 @@ import {
   CheckCircleIcon,
   CheckIcon,
   DocumentDuplicateIcon,
+  GlobeAltIcon,
   ShieldCheckIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { CertificateCard, HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
+import { useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
 import { type CreditAttestation, typedData } from "~~/kredito/attestation";
+import { RESOLVER_ABI, buildSetTextCalls, getResolver, namehash, normalize } from "~~/kredito/ens";
 import { formatUsd } from "~~/kredito/format";
 import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
 import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
@@ -522,6 +525,7 @@ export const KreditoFlow = () => {
         <CertificateSection
           result={result}
           borrower={(address ?? ZERO_ADDR) as `0x${string}`}
+          ensName={profile.ensName ?? ""}
           onBack={() => setStep(1)}
           onNext={() => advance(3)}
         />
@@ -829,11 +833,13 @@ const ScoreSection = ({
 const CertificateSection = ({
   result,
   borrower,
+  ensName,
   onBack,
   onNext,
 }: {
   result: StoredScore;
   borrower: `0x${string}`;
+  ensName: string;
   onBack: () => void;
   onNext: () => void;
 }) => {
@@ -846,6 +852,52 @@ const CertificateSection = ({
     digest: `0x${string}`;
   } | null>(null);
   const [verified, setVerified] = useState<boolean | null>(null);
+
+  const { writeContractSponsored } = useSponsoredWrite();
+  const [publishing, setPublishing] = useState(false);
+  const [publishTx, setPublishTx] = useState<`0x${string}` | null>(null);
+  const ens = ensName.trim();
+
+  // Publish the signed attestation to the business's ENS name as text records on
+  // Sepolia. The smart wallet must OWN the name (and a resolver must be set), or the
+  // resolver's setText reverts — surfaced as a clear error below.
+  const publishToEns = async () => {
+    if (!att || !ens) return;
+    setPublishing(true);
+    try {
+      const resolver = await getResolver(ens);
+      if (!resolver) {
+        notification.error(
+          `No resolver for ${ens} on Sepolia. Register this name on Sepolia and set a Public Resolver first.`,
+        );
+        return;
+      }
+      const node = namehash(normalize(ens));
+      const calls = buildSetTextCalls(node, {
+        ...att.attestation,
+        issuer: att.issuer,
+        signature: att.signature,
+      });
+      const hash = await writeContractSponsored({
+        address: resolver,
+        abi: RESOLVER_ABI,
+        functionName: "multicall",
+        args: [calls],
+      });
+      setPublishTx(hash);
+      notification.success(`Published credit identity to ${ens}`);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Publish failed";
+      const reverted = /revert|execution reverted|not authori|unauthor|owner/i.test(message);
+      notification.error(
+        reverted
+          ? `Publish reverted — the connected smart wallet must own ${ens} on Sepolia (and its resolver).`
+          : message,
+      );
+    } finally {
+      setPublishing(false);
+    }
+  };
 
   // Option B: the issuer SIGNS an EIP-712 attestation; the vault verifies it onchain.
   const signAttestation = async () => {
@@ -957,6 +1009,62 @@ const CertificateSection = ({
                   )}
                 </button>
               </>
+            )}
+          </Panel>
+
+          {/* Step 2 — publish the signed attestation to the business's ENS name (Sepolia). */}
+          <Panel eyebrow="ENS credit identity · Sepolia" title="Publish to ENS">
+            {att ? (
+              <div className="space-y-3">
+                <p className="text-sm text-base-content/65">
+                  Publish the signed attestation as text records on{" "}
+                  {ens ? <span className="k-mono font-medium">{ens}</span> : "your ENS name"}. Anyone can then look it
+                  up and verify the score — ENS is the identity, the issuer signature is the trust.
+                </p>
+                {!ens && (
+                  <div className="rounded-field bg-warning/10 text-warning text-xs px-3 py-2">
+                    No ENS name set on the onboarding form. Go back and enter your business&apos;s ENS name to publish.
+                  </div>
+                )}
+                <button
+                  className="btn btn-primary btn-sm w-full gap-1"
+                  onClick={publishToEns}
+                  disabled={publishing || !ens}
+                >
+                  {publishing ? (
+                    <>
+                      <span className="loading loading-spinner loading-xs" /> Publishing…
+                    </>
+                  ) : (
+                    <>
+                      <GlobeAltIcon className="h-4 w-4" /> Publish to ENS (Sepolia)
+                    </>
+                  )}
+                </button>
+                {publishTx && (
+                  <div className="space-y-2">
+                    <div>
+                      <p className="k-eyebrow mb-1">Publish transaction</p>
+                      <HashChip value={publishTx} lead={10} tail={8} />
+                    </div>
+                    <a
+                      href={`/ens?name=${encodeURIComponent(ens)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="link text-sm inline-flex items-center gap-1"
+                    >
+                      Verify on the ENS page
+                      <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+                    </a>
+                  </div>
+                )}
+                <p className="text-xs text-base-content/50">
+                  The connected smart wallet must own this name on Sepolia and have a Public Resolver set, otherwise the
+                  publish transaction reverts. The write is gas-sponsored.
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-base-content/55">Sign the attestation above first, then publish it to ENS.</p>
             )}
           </Panel>
         </div>
