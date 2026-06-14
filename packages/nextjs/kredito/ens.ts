@@ -1,6 +1,7 @@
 "use client";
 
 import { type CreditAttestation, riskUintLabel, typedData } from "./attestation";
+import { KREDITO_VAULT_ADDRESS } from "./vault";
 import { createPublicClient, encodeFunctionData, http, recoverTypedDataAddress } from "viem";
 import { sepolia } from "viem/chains";
 import { namehash, normalize } from "viem/ens";
@@ -152,7 +153,11 @@ export const readKreditoEns = async (
   let record: PublishedAttestation | null = null;
   if (textResult.status === "fulfilled" && typeof textResult.value === "string" && textResult.value.length > 0) {
     try {
-      record = JSON.parse(textResult.value) as PublishedAttestation;
+      // H-2: maxPrincipal is serialized as a string; coerce back to bigint to match CreditAttestation.
+      const parsed = JSON.parse(textResult.value) as Omit<PublishedAttestation, "maxPrincipal"> & {
+        maxPrincipal: string | number | bigint;
+      };
+      record = { ...parsed, maxPrincipal: BigInt(parsed.maxPrincipal) };
     } catch {
       record = null;
     }
@@ -204,13 +209,15 @@ export const verifyPublished = async (name: string): Promise<VerifyResult> => {
     evidenceDigest: record.evidenceDigest,
     issuedAt: record.issuedAt,
     expiresAt: record.expiresAt,
+    maxPrincipal: record.maxPrincipal,
   };
 
   let recoveredSigner: `0x${string}` | undefined;
   let signatureValid = false;
   try {
+    // C-1: the signature is bound to the vault address (domain.verifyingContract); recover with it.
     const recovered = (await recoverTypedDataAddress({
-      ...typedData(att),
+      ...typedData(att, KREDITO_VAULT_ADDRESS as `0x${string}`),
       signature: record.signature,
     })) as `0x${string}`;
     recoveredSigner = recovered;
@@ -250,6 +257,8 @@ export const buildSetTextCalls = (node: `0x${string}`, att: PublishedAttestation
     evidenceDigest: att.evidenceDigest,
     issuedAt: att.issuedAt,
     expiresAt: att.expiresAt,
+    // H-2: bigint maxPrincipal serialized as a base-10 string (JSON has no bigint).
+    maxPrincipal: att.maxPrincipal.toString(),
     issuer: att.issuer,
     signature: att.signature,
   });

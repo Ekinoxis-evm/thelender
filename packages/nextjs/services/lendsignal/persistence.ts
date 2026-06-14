@@ -5,6 +5,7 @@
  * (privacy boundary: no raw documents). Failures never break the scoring request.
  */
 import type { BusinessProfile, ScoreResult } from "./types";
+import "server-only";
 import { createAdminClient } from "~~/services/supabase/admin";
 
 const isSupabaseConfigured = () =>

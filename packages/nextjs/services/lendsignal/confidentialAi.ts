@@ -12,6 +12,7 @@
  * Docs/skill: .agents/skills/chainlink-confidential-ai-attester-skill/SKILL.md
  */
 import type { UploadedDocument } from "./types";
+import "server-only";
 
 // Strip trailing slashes so a base URL like ".../cldev.cloud/" doesn't produce "//v1/...".
 const BASE_URL = (

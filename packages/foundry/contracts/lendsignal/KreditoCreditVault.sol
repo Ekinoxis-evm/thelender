@@ -9,6 +9,13 @@ import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /// @title KreditoCreditVault
 /// @author Kredito
+/// @dev    DEPRECATED — DO NOT DEPLOY. Superseded by `KreditoVault` (ERC-4626 + ERC-7540).
+///         This contract's EIP-712 domain OMITS `verifyingContract` (chainId-bound only), so an
+///         issuer signature is replayable across every deployment of this contract on the same chain
+///         (the C-1 finding). The maxPrincipal / freshness / pausable / verifyingContract hardening
+///         (C-1, H-1, H-2, H-3) was applied to `KreditoVault` only. Kept solely for historical
+///         reference and the existing `DeployKreditoVault.s.sol`; if you must deploy it, port the
+///         `KreditoVault` C-1/H-1/H-2 fixes first.
 /// @notice Undercollateralized lending vault gated by an ISSUER-SIGNED, EIP-712 credit
 ///         attestation that is verified ONCHAIN at borrow time.
 ///
