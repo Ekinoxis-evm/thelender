@@ -44,6 +44,7 @@ const ATTESTATION_TUPLE = {
     { name: "evidenceDigest", type: "bytes32" },
     { name: "issuedAt", type: "uint256" },
     { name: "expiresAt", type: "uint256" },
+    { name: "maxPrincipal", type: "uint256" },
   ],
 } as const;
 

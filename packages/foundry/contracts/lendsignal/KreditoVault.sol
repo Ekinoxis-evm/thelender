@@ -9,6 +9,7 @@ import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { ReentrancyGuard } from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 
 /// @title KreditoVault
@@ -17,8 +18,10 @@ import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 ///         attestation-gated undercollateralized lender, with ERC-7540 ASYNCHRONOUS REDEEM.
 ///
 ///         Supersedes `KreditoCreditVault`. The issuer-signed EIP-712 credit-attestation borrow
-///         logic is ported byte-for-byte (domain "Kredito"/"1", chainId-bound, NO verifyingContract)
-///         so the off-chain viem signer (`packages/nextjs/kredito/attestation.ts`) keeps working.
+///         logic uses domain "Kredito"/"1" bound to BOTH `chainId` AND `verifyingContract`
+///         (= this vault's address, C-1) so a signature is only valid on this exact vault. The
+///         off-chain viem signer (`packages/nextjs/kredito/attestation.ts`) must include
+///         `verifyingContract` in its domain and `maxPrincipal` (H-2) in the attestation message.
 ///
 ///         === Why async redeem (ERC-7540) ===
 ///         This is a lending vault: LP capital can be lent out to borrowers (`totalOutstanding`) and
@@ -40,33 +43,44 @@ import { ECDSA } from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 ///           deposit, so `supportsInterface(0xce3bbe50)` is false.
 ///         - `previewRedeem`/`previewWithdraw` revert (no synchronous preview for async flows).
 ///         - Operator model + ERC-7575 `share()` + ERC-165 interface IDs implemented below.
-contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
+contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard, Pausable {
     using SafeERC20 for IERC20;
     using ECDSA for bytes32;
 
     // ---------------------------------------------------------------------
     // EIP-712 — domain & types (must match the off-chain viem signer exactly)
-    // PORTED VERBATIM from KreditoCreditVault. Do NOT change the preimages.
     // ---------------------------------------------------------------------
 
-    /// @dev EIP712Domain WITHOUT `verifyingContract`. chainId-bound only.
-    ///      keccak256("EIP712Domain(string name,string version,uint256 chainId)")
+    /// @dev C-1 FIX: the domain now binds `verifyingContract` (= address(this)) in addition to
+    ///      chainId. A signature is therefore valid ONLY on this exact vault, killing the prior
+    ///      cross-deployment replay surface (an issuer signature for one vault could be relayed to a
+    ///      sibling vault on the same chain). The off-chain viem signer MUST add
+    ///      `verifyingContract: <vault address>` to its EIP-712 domain to mirror this preimage.
+    ///      keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
     bytes32 public constant EIP712_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId)");
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
 
-    /// @dev keccak256("CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt)")
+    /// @dev H-2 FIX: `maxPrincipal` appended LAST (preserves prior field order so existing fields hash
+    ///      identically) so the issuer binds the maximum loan size into the signature itself.
+    ///      keccak256("CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt,uint256 maxPrincipal)")
     bytes32 public constant CREDIT_ATTESTATION_TYPEHASH = keccak256(
-        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt)"
+        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt,uint256 maxPrincipal)"
     );
 
     string public constant DOMAIN_NAME = "Kredito";
     string public constant DOMAIN_VERSION = "1";
 
-    /// @notice Cached EIP-712 domain separator. Bound to `block.chainid` at deploy time.
+    /// @notice H-1: maximum allowed lifetime (`expiresAt - issuedAt`) of an attestation. Caps how long
+    ///         a stale credit signature can remain redeemable, bounding the issuer's exposure window.
+    uint256 public constant MAX_ATTESTATION_TTL = 30 days;
+
+    /// @notice Cached EIP-712 domain separator. Bound to `block.chainid` AND `address(this)` at deploy.
     bytes32 public immutable DOMAIN_SEPARATOR;
 
     /// @notice The issuer-signed credit attestation. `riskTier` mirrors CreditTypes.RiskTier:
     ///         0 = high (default risk), 1 = medium, 2 = low.
+    /// @dev    `maxPrincipal` (H-2) is the issuer-bound upper bound on the loan amount; `borrow` enforces
+    ///         `amount <= maxPrincipal`. It is the LAST field so existing field order is preserved.
     struct CreditAttestation {
         address borrower;
         uint256 score;
@@ -74,6 +88,7 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
         bytes32 evidenceDigest;
         uint256 issuedAt;
         uint256 expiresAt;
+        uint256 maxPrincipal;
     }
 
     // ---------------------------------------------------------------------
@@ -168,6 +183,11 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
     error InsufficientClaimable();
     error PreviewNotSupported();
     error CannotOperateSelf();
+    error AmountExceedsCreditLimit();
+    error AttestationNotYetValid();
+    error AttestationExpired();
+    error InvalidAttestationWindow();
+    error AttestationTtlTooLong();
 
     // ---------------------------------------------------------------------
     // Events
@@ -211,11 +231,16 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
         if (address(_asset) == address(0) || _issuer == address(0)) revert ZeroAddress();
         issuer = _issuer;
 
-        // Domain separator pinned to this chain. Note the absence of `verifyingContract` —
-        // the off-chain signer reproduces this exact preimage.
+        // Domain separator pinned to this chain AND this contract (C-1). `verifyingContract` is
+        // address(this), so a signature recovered here is only valid against THIS vault. The off-chain
+        // signer must reproduce this exact preimage (chainId + verifyingContract = deployed address).
         DOMAIN_SEPARATOR = keccak256(
             abi.encode(
-                EIP712_DOMAIN_TYPEHASH, keccak256(bytes(DOMAIN_NAME)), keccak256(bytes(DOMAIN_VERSION)), block.chainid
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes(DOMAIN_NAME)),
+                keccak256(bytes(DOMAIN_VERSION)),
+                block.chainid,
+                address(this)
             )
         );
 
@@ -266,7 +291,7 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
     // EIP-712 views (ported — shared with the frontend/server signer)
     // ---------------------------------------------------------------------
 
-    /// @notice The cached EIP-712 domain separator (chainId-bound, no verifyingContract).
+    /// @notice The cached EIP-712 domain separator (bound to chainId AND this vault's address).
     function domainSeparator() external view returns (bytes32) {
         return DOMAIN_SEPARATOR;
     }
@@ -281,7 +306,8 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
                 att.riskTier,
                 att.evidenceDigest,
                 att.issuedAt,
-                att.expiresAt
+                att.expiresAt,
+                att.maxPrincipal
             )
         );
         return keccak256(abi.encodePacked("\x19\x01", DOMAIN_SEPARATOR, structHash));
@@ -292,10 +318,29 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
         return hashAttestation(att).recover(sig);
     }
 
-    /// @notice True iff the attestation is genuine (issuer-signed), unexpired, and meets policy.
+    /// @notice True iff the attestation is genuine (issuer-signed), fresh, and meets policy.
+    /// @dev    Stateless view for frontend pre-flight. `borrow()` re-checks freshness via
+    ///         `_assertFreshness` (which reverts with a precise error) and adds the one-time-use guard.
     function isEligible(CreditAttestation calldata att, bytes calldata sig) public view returns (bool) {
-        return recoverIssuer(att, sig) == issuer && att.borrower != address(0) && block.timestamp < att.expiresAt
-            && att.score >= minScore && att.riskTier != 0; // riskTier 0 = high default risk
+        return recoverIssuer(att, sig) == issuer && att.borrower != address(0) && _isFresh(att) && att.score >= minScore
+            && att.riskTier != 0; // riskTier 0 = high default risk
+    }
+
+    /// @dev H-1: freshness predicate. An attestation is fresh iff it has started, has not expired, the
+    ///      validity window is well-formed (expiry strictly after issuance), and the window is no longer
+    ///      than `MAX_ATTESTATION_TTL`. Non-reverting form, used by `isEligible`.
+    function _isFresh(CreditAttestation calldata att) internal view returns (bool) {
+        return att.issuedAt <= block.timestamp && att.expiresAt > att.issuedAt && att.expiresAt > block.timestamp
+            && att.expiresAt - att.issuedAt <= MAX_ATTESTATION_TTL;
+    }
+
+    /// @dev H-1: reverting form, used by `borrow` so the borrower gets a precise reason. Checks the same
+    ///      conditions as `_isFresh` but distinguishes each failure mode.
+    function _assertFreshness(CreditAttestation calldata att) internal view {
+        if (att.issuedAt > block.timestamp) revert AttestationNotYetValid();
+        if (att.expiresAt <= att.issuedAt) revert InvalidAttestationWindow();
+        if (att.expiresAt <= block.timestamp) revert AttestationExpired();
+        if (att.expiresAt - att.issuedAt > MAX_ATTESTATION_TTL) revert AttestationTtlTooLong();
     }
 
     // ---------------------------------------------------------------------
@@ -308,10 +353,13 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
     function borrow(CreditAttestation calldata att, bytes calldata sig, uint256 amount)
         external
         nonReentrant
+        whenNotPaused
         returns (uint256 loanId)
     {
         if (amount == 0) revert ZeroAmount();
         if (msg.sender != att.borrower) revert NotBorrower();
+        if (amount > att.maxPrincipal) revert AmountExceedsCreditLimit(); // H-2: issuer-bound loan cap
+        _assertFreshness(att); // H-1: precise freshness reverts
         if (!isEligible(att, sig)) revert NotEligible();
         if (openLoanOf[msg.sender] != 0) revert HasOpenLoan();
 
@@ -651,6 +699,22 @@ contract KreditoVault is ERC4626, Ownable2Step, ReentrancyGuard {
     // Admin (ported)
     // ---------------------------------------------------------------------
 
+    /// @notice Owner pauses new borrows (H-3). Existing loans/repay/redeem flows are unaffected — this
+    ///         is a circuit breaker for the credit-attestation surface (e.g. a leaked issuer key).
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    /// @notice Owner lifts the borrow pause (H-3).
+    function unpause() external onlyOwner {
+        _unpause();
+    }
+
+    /// @notice Set the trusted attestation signer.
+    /// @dev    SECURITY (H-3): the deploy script sets `issuer == deployer` for DEMO convenience only.
+    ///         In production the issuer MUST be a hardened signer — a multisig or HSM-backed key —
+    ///         NOT an EOA controlled by the deployer. A compromised issuer key can mint arbitrary
+    ///         creditworthiness; rotate to a multisig/HSM via this function immediately after deploy.
     function setIssuer(address newIssuer) external onlyOwner {
         if (newIssuer == address(0)) revert ZeroAddress();
         emit IssuerUpdated(issuer, newIssuer);

@@ -6,6 +6,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
+import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
 import { KreditoVault } from "../../contracts/lendsignal/KreditoVault.sol";
 import { MockERC20 } from "../../contracts/lendsignal/mocks/MockERC20.sol";
 
@@ -34,12 +35,17 @@ contract KreditoVaultTest is Test {
     uint256 internal constant SEED_SHARES = SEED * SHARE_OFFSET;
 
     // Locally recomputed EIP-712 constants — MUST match the contract & the viem signer.
+    // C-1: domain now binds `verifyingContract`. H-2: attestation typehash now ends with `maxPrincipal`.
     bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId)");
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 internal constant CREDIT_ATTESTATION_TYPEHASH = keccak256(
-        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt)"
+        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt,uint256 maxPrincipal)"
     );
     bytes32 internal localDomainSeparator;
+
+    /// @dev Default issuer-bound loan cap used by attestation helpers. Generous so existing borrow
+    ///      amounts (LOAN, SEED, idle) stay within the cap unless a test overrides it.
+    uint256 internal constant MAX_PRINCIPAL = type(uint128).max;
 
     // ERC-7540 RedeemRequest event mirror (for expectEmit).
     event RedeemRequest(
@@ -59,8 +65,15 @@ contract KreditoVaultTest is Test {
         usdc = new MockERC20("Mock USD Coin", "mUSDC", 6);
         vault = new KreditoVault(IERC20(address(usdc)), issuer);
 
+        // C-1: domain separator binds the vault address as `verifyingContract`.
         localDomainSeparator = keccak256(
-            abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Kredito")), keccak256(bytes("1")), block.chainid)
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("Kredito")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(vault)
+            )
         );
 
         // Seed liquidity through the ERC-4626 deposit path (this test contract is the first LP).
@@ -78,13 +91,22 @@ contract KreditoVaultTest is Test {
         view
         returns (KreditoVault.CreditAttestation memory)
     {
+        return _att(score, riskTier, block.timestamp, expiresAt, MAX_PRINCIPAL);
+    }
+
+    function _att(uint256 score, uint8 riskTier, uint256 issuedAt, uint256 expiresAt, uint256 maxPrincipal)
+        internal
+        view
+        returns (KreditoVault.CreditAttestation memory)
+    {
         return KreditoVault.CreditAttestation({
             borrower: borrower,
             score: score,
             riskTier: riskTier,
             evidenceDigest: keccak256("evidence"),
-            issuedAt: block.timestamp,
-            expiresAt: expiresAt
+            issuedAt: issuedAt,
+            expiresAt: expiresAt,
+            maxPrincipal: maxPrincipal
         });
     }
 
@@ -97,7 +119,8 @@ contract KreditoVaultTest is Test {
                 att.riskTier,
                 att.evidenceDigest,
                 att.issuedAt,
-                att.expiresAt
+                att.expiresAt,
+                att.maxPrincipal
             )
         );
         return keccak256(abi.encodePacked("\x19\x01", localDomainSeparator, structHash));
@@ -127,12 +150,27 @@ contract KreditoVaultTest is Test {
     // EIP-712 parity — confirm byte-for-byte identical to KreditoCreditVault
     // =====================================================================
 
-    function test_EIP712_DomainAndTypehashesUnchanged() public view {
+    function test_EIP712_DomainAndTypehashesMatchSigner() public view {
         assertEq(vault.domainSeparator(), localDomainSeparator, "domain separator mismatch");
         assertEq(vault.EIP712_DOMAIN_TYPEHASH(), EIP712_DOMAIN_TYPEHASH, "domain typehash mismatch");
         assertEq(vault.CREDIT_ATTESTATION_TYPEHASH(), CREDIT_ATTESTATION_TYPEHASH, "att typehash mismatch");
         assertEq(keccak256(bytes(vault.DOMAIN_NAME())), keccak256(bytes("Kredito")), "name != Kredito");
         assertEq(keccak256(bytes(vault.DOMAIN_VERSION())), keccak256(bytes("1")), "version != 1");
+    }
+
+    /// @dev C-1: the cached domain separator must bind THIS vault's address (verifyingContract). A
+    ///      separator recomputed with a different address must NOT equal the vault's.
+    function test_EIP712_DomainBindsVerifyingContract() public view {
+        bytes32 wrongAddrSep = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("Kredito")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(0xDEAD)
+            )
+        );
+        assertTrue(vault.domainSeparator() != wrongAddrSep, "domain must bind this vault address");
     }
 
     function test_EIP712_HashAndRecoverMatch() public view {
@@ -507,11 +545,15 @@ contract KreditoVaultTest is Test {
     }
 
     function test_Borrow_ExpiredReverts() public {
+        // H-1: an expired attestation now reverts with the precise AttestationExpired error (the
+        // reverting freshness check runs before the boolean isEligible gate). `isEligible` still
+        // returns false for the frontend pre-flight.
         KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 1 days);
         bytes memory sig = _sign(ISSUER_PK, att);
         vm.warp(att.expiresAt + 1);
+        assertFalse(vault.isEligible(att, sig), "expired -> ineligible");
         vm.prank(borrower);
-        vm.expectRevert(KreditoVault.NotEligible.selector);
+        vm.expectRevert(KreditoVault.AttestationExpired.selector);
         vault.borrow(att, sig, LOAN);
     }
 
@@ -888,6 +930,151 @@ contract KreditoVaultTest is Test {
         vault.acceptOwnership();
         assertEq(vault.owner(), newOwner, "ownership transferred after accept");
         assertEq(vault.pendingOwner(), address(0), "pending cleared");
+    }
+
+    // =====================================================================
+    // SECURITY FIXES — C-1 / H-1 / H-2 / H-3
+    // =====================================================================
+
+    /// @dev C-1: an issuer signature produced for a DIFFERENT vault address (different
+    ///      verifyingContract) must NOT be accepted by this vault, even on the same chain.
+    function test_C1_SignatureBoundToVault_RejectedOnSiblingVault() public {
+        // Deploy a sibling vault on the SAME chain with the SAME issuer.
+        KreditoVault sibling = new KreditoVault(IERC20(address(usdc)), issuer);
+        usdc.mint(address(this), SEED);
+        usdc.approve(address(sibling), type(uint256).max);
+        sibling.deposit(SEED, address(this));
+
+        // Build an attestation + signature valid for the ORIGINAL `vault` (uses localDomainSeparator,
+        // which binds address(vault)).
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 1 days);
+        bytes memory sig = _sign(ISSUER_PK, att);
+
+        // It works on the vault it was signed for.
+        assertTrue(vault.isEligible(att, sig), "valid on original vault");
+        // It must NOT recover to the issuer on the sibling (different verifyingContract).
+        assertFalse(sibling.isEligible(att, sig), "must be rejected on sibling vault");
+
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.NotEligible.selector);
+        sibling.borrow(att, sig, LOAN);
+    }
+
+    /// @dev H-2: borrowing more than the issuer-bound `maxPrincipal` reverts.
+    function test_H2_BorrowExceedingMaxPrincipalReverts() public {
+        uint256 cap = 5_000 * UNIT;
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp, block.timestamp + 1 days, cap);
+        bytes memory sig = _sign(ISSUER_PK, att);
+
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.AmountExceedsCreditLimit.selector);
+        vault.borrow(att, sig, cap + 1);
+    }
+
+    /// @dev H-2: borrowing exactly `maxPrincipal` is allowed.
+    function test_H2_BorrowAtMaxPrincipalSucceeds() public {
+        uint256 cap = 5_000 * UNIT;
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp, block.timestamp + 1 days, cap);
+        bytes memory sig = _sign(ISSUER_PK, att);
+
+        vm.prank(borrower);
+        uint256 loanId = vault.borrow(att, sig, cap);
+        assertEq(vault.getLoan(loanId).principal, cap, "loan at cap");
+        assertEq(usdc.balanceOf(borrower), cap, "funded at cap");
+    }
+
+    /// @dev H-1: an attestation whose issuedAt is in the future is not yet valid.
+    function test_H1_BorrowNotYetValidReverts() public {
+        KreditoVault.CreditAttestation memory att =
+            _att(800, 2, block.timestamp + 1 hours, block.timestamp + 1 days, MAX_PRINCIPAL);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        assertFalse(vault.isEligible(att, sig), "not yet valid -> ineligible");
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.AttestationNotYetValid.selector);
+        vault.borrow(att, sig, LOAN);
+    }
+
+    /// @dev H-1: an attestation with expiresAt <= issuedAt has a malformed window.
+    function test_H1_BorrowInvalidWindowReverts() public {
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp, block.timestamp, MAX_PRINCIPAL); // expiresAt == issuedAt
+        bytes memory sig = _sign(ISSUER_PK, att);
+        assertFalse(vault.isEligible(att, sig), "malformed window -> ineligible");
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.InvalidAttestationWindow.selector);
+        vault.borrow(att, sig, LOAN);
+    }
+
+    /// @dev H-1: an already-expired attestation reverts with AttestationExpired (precise reason).
+    function test_H1_BorrowExpiredRevertsPrecise() public {
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 1 days);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.warp(att.expiresAt + 1);
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.AttestationExpired.selector);
+        vault.borrow(att, sig, LOAN);
+    }
+
+    /// @dev H-1: an attestation whose validity window exceeds MAX_ATTESTATION_TTL reverts.
+    function test_H1_BorrowTtlTooLongReverts() public {
+        uint256 ttl = vault.MAX_ATTESTATION_TTL() + 1;
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp, block.timestamp + ttl, MAX_PRINCIPAL);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        assertFalse(vault.isEligible(att, sig), "ttl too long -> ineligible");
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.AttestationTtlTooLong.selector);
+        vault.borrow(att, sig, LOAN);
+    }
+
+    /// @dev H-1: an attestation exactly at the max TTL is still valid.
+    function test_H1_BorrowAtMaxTtlSucceeds() public {
+        uint256 ttl = vault.MAX_ATTESTATION_TTL();
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp, block.timestamp + ttl, MAX_PRINCIPAL);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.prank(borrower);
+        uint256 loanId = vault.borrow(att, sig, LOAN);
+        assertEq(vault.getLoan(loanId).principal, LOAN, "borrow at max TTL works");
+    }
+
+    /// @dev H-3: when paused, borrow reverts; pause/unpause are owner-only; unpause restores borrowing.
+    function test_H3_PausableBorrow() public {
+        vault.pause();
+        assertTrue(vault.paused(), "vault paused");
+
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 1 days);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.prank(borrower);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        vault.borrow(att, sig, LOAN);
+
+        vault.unpause();
+        assertFalse(vault.paused(), "vault unpaused");
+        vm.prank(borrower);
+        uint256 loanId = vault.borrow(att, sig, LOAN);
+        assertEq(usdc.balanceOf(borrower), LOAN, "borrow works after unpause");
+        assertGt(loanId, 0, "loan issued");
+    }
+
+    /// @dev H-3: pause/unpause are owner-only.
+    function test_H3_PauseUnpauseOnlyOwner() public {
+        vm.prank(rogue);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, rogue));
+        vault.pause();
+
+        vault.pause();
+        vm.prank(rogue);
+        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, rogue));
+        vault.unpause();
+    }
+
+    /// @dev H-3: repay still works while paused (only new borrows are gated).
+    function test_H3_RepayWorksWhilePaused() public {
+        uint256 loanId = _borrow(LOAN);
+        vault.pause();
+        vm.startPrank(borrower);
+        usdc.approve(address(vault), type(uint256).max);
+        vault.repay(loanId);
+        vm.stopPrank();
+        assertEq(vault.totalOutstanding(), 0, "repay unaffected by pause");
     }
 
     function test_SetMinScore_BoundedByMax() public {

@@ -882,7 +882,10 @@ const CertificateSection = ({
       return;
     }
     let cancelled = false;
-    recoverTypedDataAddress({ ...typedData(att.attestation), signature: att.signature })
+    recoverTypedDataAddress({
+      ...typedData(att.attestation, KREDITO_VAULT_ADDRESS as `0x${string}`),
+      signature: att.signature,
+    })
       .then(r => !cancelled && setVerified(r.toLowerCase() === att.issuer.toLowerCase()))
       .catch(() => !cancelled && setVerified(false));
     return () => {
@@ -949,11 +952,22 @@ const CertificateSection = ({
           riskTier: result.riskTier,
           evidenceDigest: result.scoreInputs.evidenceDigest,
           expiresAt: result.scoreInputs.expiresAt,
+          // H-2: issuer-bound loan cap. Demo asset is 6-decimal mUSDC where 1 unit == $1, so the
+          // recommended USD credit limit maps directly to base units. The vault enforces amount <= this.
+          maxPrincipal: (
+            BigInt(Math.max(0, Math.round(result.bureau.recommendedCreditLimitUsd))) * 1_000_000n
+          ).toString(),
         }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.message || json?.error || "Signing failed");
-      setAtt(json as SignedAttestation);
+      // H-2: API serializes maxPrincipal as a string (JSON has no bigint); coerce back to bigint so the
+      // borrow tuple / typed-data encode correctly.
+      const signed: SignedAttestation = {
+        ...(json as SignedAttestation),
+        attestation: { ...json.attestation, maxPrincipal: BigInt(json.attestation.maxPrincipal) },
+      };
+      setAtt(signed);
       notification.success("Attestation signed by the protocol issuer");
     } catch (e) {
       notification.error(e instanceof Error ? e.message : "Signing failed");
