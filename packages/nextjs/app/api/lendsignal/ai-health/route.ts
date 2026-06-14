@@ -9,7 +9,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET() {
-  const base = process.env.CHAINLINK_CONFIDENTIAL_AI_BASE_URL ?? "https://confidential-ai-dev-preview.cldev.cloud";
+  const base = (
+    process.env.CHAINLINK_CONFIDENTIAL_AI_BASE_URL ?? "https://confidential-ai-dev-preview.cldev.cloud"
+  ).replace(/\/+$/, "");
   const key = process.env.CHAINLINK_CONFIDENTIAL_AI_API_KEY ?? "";
   const model = process.env.CHAINLINK_CONFIDENTIAL_AI_MODEL ?? "(default gemma4)";
 
