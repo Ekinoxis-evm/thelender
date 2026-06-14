@@ -642,7 +642,15 @@ const ScoreSection = ({
         </Panel>
 
         <div className="space-y-5">
-          <Panel eyebrow="Evidence anchors" title="Onchain hashes">
+          <Panel
+            eyebrow="Evidence anchors"
+            title="Onchain-ready digests"
+            action={<span className="badge badge-ghost badge-sm">not issued yet</span>}
+          >
+            <p className="text-xs text-base-content/55 mb-3">
+              These three digests (the certificate&apos;s <code>ScoreInputs</code>) are written onchain when you issue
+              the certificate. Raw evidence stays offchain.
+            </p>
             <div className="space-y-2.5">
               <div>
                 <p className="k-eyebrow mb-1">Attestation</p>
@@ -657,6 +665,17 @@ const ScoreSection = ({
                 <HashChip value={result.scoreInputs.evidenceDigest} />
               </div>
             </div>
+            {!result.inferenceId.startsWith("mock") && (
+              <a
+                href={`/inference/${result.inferenceId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="link text-xs inline-flex items-center gap-1 mt-3"
+              >
+                Verify the Chainlink attestation
+                <ArrowTopRightOnSquareIcon className="h-3 w-3" />
+              </a>
+            )}
           </Panel>
           <Panel
             eyebrow="Policy"
