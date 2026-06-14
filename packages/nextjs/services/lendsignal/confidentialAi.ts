@@ -13,7 +13,10 @@
  */
 import type { UploadedDocument } from "./types";
 
-const BASE_URL = process.env.CHAINLINK_CONFIDENTIAL_AI_BASE_URL ?? "https://confidential-ai-dev-preview.cldev.cloud";
+// Strip trailing slashes so a base URL like ".../cldev.cloud/" doesn't produce "//v1/...".
+const BASE_URL = (
+  process.env.CHAINLINK_CONFIDENTIAL_AI_BASE_URL ?? "https://confidential-ai-dev-preview.cldev.cloud"
+).replace(/\/+$/, "");
 const API_KEY = process.env.CHAINLINK_CONFIDENTIAL_AI_API_KEY ?? "";
 const MODEL = process.env.CHAINLINK_CONFIDENTIAL_AI_MODEL ?? "gemma4";
 
