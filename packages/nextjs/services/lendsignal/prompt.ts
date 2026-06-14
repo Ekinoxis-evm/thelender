@@ -46,8 +46,18 @@ const CREDIT_SCHEMA_BLOCK = `Return only JSON in exactly this shape:
   "debt_capacity": "low" | "medium" | "high",
   "creditworthiness_score": number,   // integer 0..1000
   "risk_tier": "low_default_risk" | "medium_default_risk" | "high_default_risk",
-  "document_analysis": [               // ONE entry per attached document
-    { "filename": string, "finding": string, "signal": "positive" | "neutral" | "negative" }
+  "decision": "approved" | "manual_review" | "denied",
+  "document_analysis": [               // EXACTLY ONE entry per attached document
+    {
+      "filename": string,
+      "document_type": string,        // e.g. "Income statement", "Tax return", "Bank statement"
+      "present": boolean,             // was the document provided and readable
+      "authenticity": "low" | "medium" | "high",   // does it look like a genuine document
+      "consistency": "low" | "medium" | "high",     // is the data internally/cross-document consistent (truthful)
+      "reliable": boolean,            // trustworthy enough to underwrite on
+      "finding": string,              // concise key takeaway
+      "signal": "positive" | "neutral" | "negative"
+    }
   ],
   "reasoning_summary": string,
   "missing_information": string[]
@@ -56,21 +66,28 @@ const CREDIT_SCHEMA_BLOCK = `Return only JSON in exactly this shape:
 export function buildCreditPrompt(profile: BusinessProfile, filenames: string[]): string {
   const fileList = filenames.length ? filenames.map(f => `- ${f}`).join("\n") : "- (none attached)";
   return [
-    "You are evaluating a business borrower for an onchain working-capital loan.",
+    "You are underwriting a business borrower for an onchain working-capital loan.",
     "",
     "Business context:",
     ...businessFacts(profile).map(f => `- ${f}`),
     "",
-    "Attached documents (analyze EACH one separately):",
+    "Attached documents (assess EACH one separately):",
     fileList,
     "",
-    "Analyze every attached document on its own and add exactly ONE `document_analysis` entry per",
-    "file, keyed by its filename, with a concise finding and whether it is positive / neutral /",
-    "negative for creditworthiness. Then synthesize all documents into the overall credit fields.",
-    "If the documents lack information for a field, reflect it in `missing_information` and lower the score.",
+    "STEP 1 — Per document: add EXACTLY ONE `document_analysis` entry per attached file. For each",
+    "document decide whether it is RELIABLE and TRUTHFUL: rate `authenticity` (does it look like a",
+    "genuine document) and `consistency` (do the figures hold together internally and across the",
+    "other documents). Set `reliable` to false if it looks fabricated, altered, or inconsistent.",
     "",
-    "`creditworthiness_score` must be an integer 0..1000 consistent with `risk_tier`:",
-    "  >= 750 -> low_default_risk, 600..749 -> medium_default_risk, < 600 -> high_default_risk.",
+    "STEP 2 — Reduce: synthesize the per-document summaries into the overall credit fields, the",
+    "`creditworthiness_score`, and a final `decision`:",
+    "  approved -> strong, reliable evidence; manual_review -> mixed/incomplete; denied -> weak or unreliable.",
+    "Down-weight any document that is not `reliable`. List gaps in `missing_information`.",
+    "",
+    "`creditworthiness_score` must be an integer 0..1000 consistent with `risk_tier` and `decision`:",
+    "  >= 750 -> low_default_risk / approved, 600..749 -> medium_default_risk / manual_review,",
+    "  < 600 -> high_default_risk / denied. Score strictly on the evidence: excellent financials with",
+    "  clean filings should score high (800+); thin, loss-making, or adverse evidence should score low (<550).",
     "",
     CREDIT_SCHEMA_BLOCK,
     "",
@@ -104,5 +121,117 @@ export function buildProfilePrompt(profile: BusinessProfile): string {
     ...businessFacts(profile).map(f => `- ${f}`),
     "",
     PROFILE_SCHEMA_BLOCK,
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------- 3) SECTION (one inference per document)
+
+export type SectionKey = "financials" | "tax" | "bank" | "ar" | "debt" | "legal" | "general";
+
+/** Each evidence section gets its own analysis lens. */
+export const SECTION_FOCUS: Record<SectionKey, { type: string; focus: string }> = {
+  financials: {
+    type: "Financial statements",
+    focus: "revenue, margins, profitability, growth trend and net-income quality",
+  },
+  tax: { type: "Tax returns", focus: "filing status, consistency with reported revenue, and any tax liabilities" },
+  bank: {
+    type: "Bank statements",
+    focus: "average balances, deposits vs reported revenue, and overdraft / NSF events",
+  },
+  ar: {
+    type: "Accounts receivable aging",
+    focus: "receivable quality, aging buckets, concentration and collectibility",
+  },
+  debt: { type: "Debt schedule", focus: "leverage, payment history and any costly or encumbering obligations" },
+  legal: { type: "Legal & formation", focus: "registration, licenses and liens / judgments / bankruptcies" },
+  general: {
+    type: "Supporting document",
+    focus: "anything relevant to creditworthiness, authenticity and consistency",
+  },
+};
+
+/** Classify a document into a section from its filename. */
+export function detectSection(filename: string): SectionKey {
+  const f = filename.toLowerCase();
+  if (/(income|financ|p&l|profit|balance|cash.?flow)/.test(f)) return "financials";
+  if (/tax/.test(f)) return "tax";
+  if (/bank|statement/.test(f)) return "bank";
+  if (/(a\/?r|receivable|aging)/.test(f)) return "ar";
+  if (/debt|loan|liab/.test(f)) return "debt";
+  if (/legal|article|license|formation|incorp|ein/.test(f)) return "legal";
+  return "general";
+}
+
+export const SECTION_SYSTEM_PROMPT =
+  "You are a confidential credit underwriter analyzing ONE business document inside a trusted execution " +
+  "environment. Return ONLY a single JSON object — no markdown, code fences, or text outside the JSON. " +
+  "Never reproduce raw private document content; reason over it and summarize only.";
+
+const SECTION_SCHEMA_BLOCK = `Return only JSON in exactly this shape:
+{
+  "document_type": string,
+  "present": boolean,                  // was the document provided and readable
+  "authenticity": "low" | "medium" | "high",   // does it look like a genuine document
+  "consistency": "low" | "medium" | "high",     // do the figures hold together (truthful)
+  "reliable": boolean,                 // trustworthy enough to underwrite on
+  "finding": string,                   // concise key takeaway
+  "signal": "positive" | "neutral" | "negative",
+  "section_score": number              // integer 0..1000 — how well THIS document supports the loan
+}`;
+
+export function buildSectionPrompt(section: SectionKey, profile: BusinessProfile, filename: string): string {
+  const { type, focus } = SECTION_FOCUS[section];
+  return [
+    `You are analyzing ONE document — a ${type} ("${filename}") — for ${profile.legalName}` +
+      (profile.industry ? ` (${profile.industry}).` : "."),
+    `Focus on ${focus}.`,
+    "Decide whether the document is RELIABLE and TRUTHFUL: rate `authenticity` (a genuine document) and",
+    "`consistency` (the figures are internally coherent). Set `reliable` to false if it looks fabricated,",
+    "altered, incomplete, or inconsistent. Then score THIS section 0..1000 for how well it supports a",
+    "working-capital loan (excellent evidence 800+, adverse or missing evidence <500).",
+    "",
+    SECTION_SCHEMA_BLOCK,
+    "",
+    "Do not expose raw private document content.",
+  ].join("\n");
+}
+
+// ---------------------------------------------------------------- 4) REDUCE (final decision over all sections)
+
+export const REDUCE_SYSTEM_PROMPT =
+  "You are the lead underwriter. You receive per-section analyses of a borrower's documents (already " +
+  "summarized) and produce the overall credit decision as ONLY a single JSON object. No markdown or extra text.";
+
+const REDUCE_SCHEMA_BLOCK = `Return only JSON in exactly this shape:
+{
+  "business_verified": boolean,
+  "document_authenticity": "low" | "medium" | "high",
+  "fraud_risk": "low" | "medium" | "high",
+  "cashflow_strength": "low" | "medium" | "high",
+  "debt_capacity": "low" | "medium" | "high",
+  "creditworthiness_score": number,   // integer 0..1000
+  "risk_tier": "low_default_risk" | "medium_default_risk" | "high_default_risk",
+  "decision": "approved" | "manual_review" | "denied",
+  "reasoning_summary": string,
+  "missing_information": string[]
+}`;
+
+export type SectionSummary = { type: string; filename: string; json: string };
+
+export function buildReducePrompt(profile: BusinessProfile, sections: SectionSummary[]): string {
+  return [
+    `You are the lead underwriter for ${profile.legalName}. Below are the per-section analyses of the`,
+    "borrower's documents. Internally weigh each section, DOWN-WEIGHT any that is not reliable, and",
+    "synthesize the overall creditworthiness, score, and final decision.",
+    "",
+    "Per-section analyses:",
+    ...sections.map(s => `- ${s.type} (${s.filename}): ${s.json}`),
+    "",
+    "`creditworthiness_score` (0..1000) must be consistent with `risk_tier` and `decision`:",
+    "  >= 750 -> low_default_risk / approved, 600..749 -> medium_default_risk / manual_review,",
+    "  < 600 -> high_default_risk / denied.",
+    "",
+    REDUCE_SCHEMA_BLOCK,
   ].join("\n");
 }

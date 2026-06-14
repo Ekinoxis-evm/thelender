@@ -13,8 +13,10 @@ import type { BorrowerStrength } from "./creditBureau";
 import type {
   ConfidentialAiResult,
   CreditBureauSignal,
+  CreditDecision,
   DocumentAnalysis,
   DocumentSignal,
+  InferenceRef,
   OffchainProfileSignal,
   RiskBand,
   RiskTier,
@@ -37,6 +39,34 @@ export function tierFromScore(score: number): RiskTier {
   return "high_default_risk";
 }
 
+export function decisionForScore(score: number): CreditDecision {
+  if (score >= 750) return "approved";
+  if (score >= 600) return "manual_review";
+  return "denied";
+}
+
+/**
+ * Clamp the AI score into the band expected for a DEMO borrower so the demo lands
+ * on a clearly marked tier regardless of model variance. Only applied to demo
+ * profiles — real uploads keep the model's raw score. Bands chosen so the 70/30
+ * blend with the demo bureau scores stays inside the target tier.
+ */
+export function clampAiToBand(score: number, strength: BorrowerStrength): number {
+  const bands: Record<BorrowerStrength, [number, number]> = {
+    strong: [780, 920],
+    medium: [620, 720],
+    weak: [400, 560],
+  };
+  const [lo, hi] = bands[strength];
+  return Math.max(lo, Math.min(hi, score));
+}
+
+/** Apply the demo band clamp and re-derive tier + decision so everything is consistent. */
+export function applyDemoBand(ai: ConfidentialAiResult, strength: BorrowerStrength): ConfidentialAiResult {
+  const score = clampAiToBand(ai.creditworthiness_score, strength);
+  return { ...ai, creditworthiness_score: score, risk_tier: tierFromScore(score), decision: decisionForScore(score) };
+}
+
 export function combineScore(aiScore: number, bureauScore: number): number {
   return Math.floor((aiScore * AI_WEIGHT_BPS + bureauScore * BUREAU_WEIGHT_BPS) / BPS_DENOMINATOR);
 }
@@ -57,8 +87,9 @@ export function parseAiOutput(output: string | undefined, fallbackStrength: Borr
       cashflow_strength: asBand(parsed.cashflow_strength),
       debt_capacity: asBand(parsed.debt_capacity),
       creditworthiness_score: score,
-      // Keep tier consistent with the numeric score regardless of what the model said.
+      // Keep tier + decision consistent with the numeric score regardless of what the model said.
       risk_tier: tierFromScore(score),
+      decision: decisionForScore(score),
       document_analysis: parseDocumentAnalysis(parsed.document_analysis),
       reasoning_summary: String(parsed.reasoning_summary ?? "").slice(0, 1000),
       missing_information: Array.isArray(parsed.missing_information)
@@ -71,7 +102,7 @@ export function parseAiOutput(output: string | undefined, fallbackStrength: Borr
 
 /** Deterministic AI result used for the mock fallback (no API key) or parse failure. */
 export function fallbackAiResult(strength: BorrowerStrength): ConfidentialAiResult {
-  const byStrength: Record<BorrowerStrength, Omit<ConfidentialAiResult, "document_analysis">> = {
+  const byStrength: Record<BorrowerStrength, Omit<ConfidentialAiResult, "document_analysis" | "decision">> = {
     strong: {
       business_verified: true,
       document_authenticity: "high",
@@ -106,7 +137,8 @@ export function fallbackAiResult(strength: BorrowerStrength): ConfidentialAiResu
       missing_information: ["tax returns", "A/R aging report", "verified bank statements"],
     },
   };
-  return { ...byStrength[strength], document_analysis: [] };
+  const base = byStrength[strength];
+  return { ...base, document_analysis: [], decision: decisionForScore(base.creditworthiness_score) };
 }
 
 /** Parse the off-chain profile query output into a complementary signal. */
@@ -155,6 +187,88 @@ export function fallbackOffchain(strength: BorrowerStrength): OffchainProfileSig
   return { ...byStrength[strength], inferenceId: `mock-${strength}`, model: "mock", attested: false };
 }
 
+/** Parse one per-section inference into a document entry + its section score. */
+export function parseSectionOutput(
+  output: string | undefined,
+  documentType: string,
+  filename: string,
+): { docAnalysis: DocumentAnalysis; sectionScore: number } {
+  const parsed = tryExtractJson(output);
+  if (parsed) {
+    return {
+      docAnalysis: {
+        filename,
+        documentType: String(parsed.document_type ?? documentType).slice(0, 80),
+        present: parsed.present === undefined ? true : Boolean(parsed.present),
+        authenticity: asBand(parsed.authenticity),
+        consistency: asBand(parsed.consistency),
+        reliable: parsed.reliable === undefined ? true : Boolean(parsed.reliable),
+        finding: String(parsed.finding ?? "").slice(0, 240),
+        signal: asSignal(parsed.signal),
+      },
+      sectionScore: clampScore(Number(parsed.section_score ?? 0)),
+    };
+  }
+  return placeholderSection(documentType, filename);
+}
+
+/** Neutral placeholder when a section inference fails or returns nothing parseable. */
+export function placeholderSection(
+  documentType: string,
+  filename: string,
+): { docAnalysis: DocumentAnalysis; sectionScore: number } {
+  return {
+    docAnalysis: {
+      filename,
+      documentType,
+      present: false,
+      authenticity: "medium",
+      consistency: "medium",
+      reliable: true,
+      finding: "This document could not be analyzed in time.",
+      signal: "neutral",
+    },
+    sectionScore: 600,
+  };
+}
+
+/** Reduce the per-section analyses into the overall credit result. */
+export function parseReduceOutput(
+  output: string | undefined,
+  documentAnalysis: DocumentAnalysis[],
+  avgSectionScore: number,
+  fallbackStrength: BorrowerStrength,
+): ConfidentialAiResult {
+  const parsed = tryExtractJson(output);
+  if (parsed) {
+    const score = clampScore(Number(parsed.creditworthiness_score ?? avgSectionScore));
+    return {
+      business_verified: Boolean(parsed.business_verified),
+      document_authenticity: asBand(parsed.document_authenticity),
+      fraud_risk: asBand(parsed.fraud_risk),
+      cashflow_strength: asBand(parsed.cashflow_strength),
+      debt_capacity: asBand(parsed.debt_capacity),
+      creditworthiness_score: score,
+      risk_tier: tierFromScore(score),
+      decision: decisionForScore(score),
+      document_analysis: documentAnalysis,
+      reasoning_summary: String(parsed.reasoning_summary ?? "").slice(0, 1000),
+      missing_information: Array.isArray(parsed.missing_information)
+        ? parsed.missing_information.map(String).slice(0, 12)
+        : [],
+    };
+  }
+  const fb = fallbackAiResult(fallbackStrength);
+  const score = clampScore(avgSectionScore || fb.creditworthiness_score);
+  return {
+    ...fb,
+    creditworthiness_score: score,
+    risk_tier: tierFromScore(score),
+    decision: decisionForScore(score),
+    document_analysis: documentAnalysis,
+  };
+}
+
 type ScoreResultArgs = {
   inferenceId: string;
   model: string;
@@ -165,6 +279,7 @@ type ScoreResultArgs = {
   documentsBase64: string[];
   nowSeconds: number;
   offchain?: OffchainProfileSignal;
+  inferences?: InferenceRef[];
 };
 
 /** Assemble the full ScoreResult, including the onchain-ready `ScoreInputs`. */
@@ -178,6 +293,7 @@ export function buildScoreResult({
   documentsBase64,
   nowSeconds,
   offchain,
+  inferences,
 }: ScoreResultArgs): ScoreResult {
   const aiScore = clampScore(ai.creditworthiness_score);
   const bureauScore = clampScore(bureau.bureauScore);
@@ -210,6 +326,7 @@ export function buildScoreResult({
     scoreInputs,
     usage: snapshot?.usage,
     ...(offchain ? { offchain } : {}),
+    ...(inferences && inferences.length ? { inferences } : {}),
   };
 }
 
@@ -234,6 +351,11 @@ function parseDocumentAnalysis(v: unknown): DocumentAnalysis[] {
     const o = (item ?? {}) as Record<string, unknown>;
     return {
       filename: String(o.filename ?? "document").slice(0, 120),
+      documentType: String(o.document_type ?? o.documentType ?? "Document").slice(0, 80),
+      present: o.present === undefined ? true : Boolean(o.present),
+      authenticity: asBand(o.authenticity),
+      consistency: asBand(o.consistency),
+      reliable: o.reliable === undefined ? true : Boolean(o.reliable),
       finding: String(o.finding ?? "").slice(0, 240),
       signal: asSignal(o.signal),
     };

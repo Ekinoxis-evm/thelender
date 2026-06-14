@@ -1,28 +1,21 @@
 import { NextRequest, NextResponse } from "next/server";
-import {
-  type InferenceSnapshot,
-  isConfidentialAiConfigured,
-  runInference,
-} from "~~/services/lendsignal/confidentialAi";
+import { isConfidentialAiConfigured, runInference } from "~~/services/lendsignal/confidentialAi";
 import { type BorrowerStrength, evaluateBureau } from "~~/services/lendsignal/creditBureau";
 import { getDemoProfile } from "~~/services/lendsignal/demoProfiles";
 import { persistCreditCheck } from "~~/services/lendsignal/persistence";
+import { runCreditPipeline } from "~~/services/lendsignal/pipeline";
+import { PROFILE_SYSTEM_PROMPT, buildProfilePrompt } from "~~/services/lendsignal/prompt";
 import {
-  CREDIT_SYSTEM_PROMPT,
-  PROFILE_SYSTEM_PROMPT,
-  buildCreditPrompt,
-  buildProfilePrompt,
-} from "~~/services/lendsignal/prompt";
-import {
+  applyDemoBand,
   buildScoreResult,
   fallbackAiResult,
   fallbackOffchain,
-  parseAiOutput,
   parseProfileOutput,
 } from "~~/services/lendsignal/score";
 import type {
   BusinessProfile,
   ConfidentialAiResult,
+  InferenceRef,
   OffchainProfileSignal,
   UploadedDocument,
 } from "~~/services/lendsignal/types";
@@ -30,16 +23,17 @@ import type {
 /**
  * POST /api/lendsignal/score
  *
- * Runs TWO Confidential AI queries in parallel:
- *   1. CREDIT  — over the uploaded documents, analyzing each file one by one;
- *                attested, feeds the onchain combinedScore (70/30 with the bureau).
- *   2. PROFILE — off-chain, profile-only complementary signal (shown apart).
+ * Map → reduce credit pipeline (server-side; the API key never reaches the client):
+ *   1. one Confidential AI inference PER document (section-specific prompts), in parallel
+ *   2. a reduce inference → overall decision
+ *   3. an off-chain profile inference (parallel) — complementary signal
+ *   4. CRS bureau (mock) + combine 70/30 → onchain ScoreInputs
  *
  * Falls back to a deterministic mock (attested:false) when no API key is set.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const maxDuration = 120;
+export const maxDuration = 300;
 
 const MODEL = process.env.CHAINLINK_CONFIDENTIAL_AI_MODEL ?? "gemma4";
 
@@ -94,43 +88,38 @@ export async function POST(req: NextRequest) {
   const documentsBase64 = documents.map(d => d.contentBase64);
   const nowSeconds = Math.floor(Date.now() / 1000);
 
-  // --- Step 1: the two Confidential AI queries (or mock fallback) ---
+  // --- Step 1: the pipeline (per-section + reduce) + the off-chain query ---
   let ai: ConfidentialAiResult;
   let attested = false;
   let inferenceId: string;
-  let snapshot: InferenceSnapshot | undefined;
   let offchain: OffchainProfileSignal | undefined;
+  let inferences: InferenceRef[] = [];
   let note: string | undefined;
 
   if (isConfidentialAiConfigured()) {
-    const filenames = documents.map(d => d.filename);
-    const [mainSettled, profileSettled] = await Promise.allSettled([
-      runInference({ prompt: buildCreditPrompt(profile, filenames), systemPrompt: CREDIT_SYSTEM_PROMPT, documents }),
-      runInference({ prompt: buildProfilePrompt(profile), systemPrompt: PROFILE_SYSTEM_PROMPT, documents: [] }),
-    ]);
+    // Off-chain profile query runs in parallel with the whole map→reduce pipeline.
+    const profilePromise = runInference({
+      prompt: buildProfilePrompt(profile),
+      systemPrompt: PROFILE_SYSTEM_PROMPT,
+      documents: [],
+    }).catch(() => undefined);
 
-    // Query 1 — document-based, attested.
-    if (mainSettled.status === "fulfilled" && mainSettled.value.status === "completed") {
-      snapshot = mainSettled.value;
-      ai = parseAiOutput(snapshot.output, strength);
-      attested = true;
-      inferenceId = snapshot.id;
-    } else {
-      ai = fallbackAiResult(strength);
-      if (mainSettled.status === "fulfilled") {
-        inferenceId = mainSettled.value.id;
-        note = `Inference returned status "${mainSettled.value.status}"${mainSettled.value.error ? `: ${mainSettled.value.error}` : ""}. Using fallback scoring.`;
-      } else {
-        inferenceId = `mock-${nowSeconds}`;
-        note = `Confidential AI request failed (${mainSettled.reason instanceof Error ? mainSettled.reason.message : String(mainSettled.reason)}). Using fallback scoring.`;
-      }
-    }
+    const [pipe, profileSnap] = await Promise.all([runCreditPipeline(profile, documents, strength), profilePromise]);
 
-    // Query 2 — off-chain profile signal (complementary; never blocks the main result).
+    ai = pipe.ai;
+    attested = pipe.attested;
+    inferenceId = pipe.reduceInferenceId ?? `mock-${nowSeconds}`;
+    inferences = pipe.inferences;
+
     offchain =
-      profileSettled.status === "fulfilled" && profileSettled.value.status === "completed"
-        ? parseProfileOutput(profileSettled.value, MODEL, strength)
+      profileSnap && profileSnap.status === "completed"
+        ? parseProfileOutput(profileSnap, MODEL, strength)
         : fallbackOffchain(strength);
+    inferences.push({ label: "Off-chain profile", inferenceId: offchain.inferenceId, attested: offchain.attested });
+
+    if (!attested) {
+      note = "Some Confidential AI queries did not finish in time — partial / fallback scoring was used.";
+    }
   } else {
     ai = fallbackAiResult(strength);
     inferenceId = `mock-${nowSeconds}`;
@@ -138,20 +127,23 @@ export async function POST(req: NextRequest) {
     note = "CHAINLINK_CONFIDENTIAL_AI_API_KEY not set — returning a deterministic mock (not attested).";
   }
 
+  // Demo profiles land on a clearly marked band regardless of live-model variance.
+  if (demo) ai = applyDemoBand(ai, strength);
+
   // --- Step 2: CRS bureau (mock) ---
   const bureau = evaluateBureau(profile, strength);
 
-  // --- Step 3: combine 70/30 → onchain-ready ScoreInputs (+ off-chain signal) ---
+  // --- Step 3: combine 70/30 → onchain-ready ScoreInputs (+ off-chain signal + query ids) ---
   const result = buildScoreResult({
     inferenceId,
     model: MODEL,
     attested,
     ai,
     bureau,
-    snapshot,
     documentsBase64,
     nowSeconds,
     offchain,
+    inferences,
   });
 
   // Persist the normalized check (best-effort; never blocks the response on failure).

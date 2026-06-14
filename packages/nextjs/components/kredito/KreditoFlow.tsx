@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Address as AddressDisplay } from "@scaffold-ui/components";
 import {
   ArrowLeftIcon,
@@ -46,6 +46,16 @@ const BAND_BADGE: Record<string, string> = {
   low: "badge-success",
   medium: "badge-warning",
   high: "badge-error",
+};
+const DECISION_BADGE: Record<string, string> = {
+  approved: "badge-success",
+  manual_review: "badge-warning",
+  denied: "badge-error",
+};
+const DECISION_LABEL: Record<string, string> = {
+  approved: "Approved",
+  manual_review: "Manual review",
+  denied: "Denied",
 };
 
 const fileToBase64 = (file: File) =>
@@ -158,6 +168,70 @@ const DocSlot = ({
   </div>
 );
 
+const SLOT_KEYS = REQUIRED_DOCS.map(d => d.key) as readonly string[];
+
+/** Map a filename to one of the evidence slots (mirrors the server's detectSection). */
+const detectSlot = (filename: string): string | null => {
+  const f = filename.toLowerCase();
+  if (/(income|financ|p&l|profit|balance|cash.?flow)/.test(f)) return "financials";
+  if (/tax/.test(f)) return "tax";
+  if (/bank|statement/.test(f)) return "bank";
+  if (/(a\/?r|receivable|aging)/.test(f)) return "ar";
+  if (/debt|loan|liab/.test(f)) return "debt";
+  if (/legal|article|license|formation|incorp|ein/.test(f)) return "legal";
+  return null;
+};
+
+/** Animated multi-step loader shown while the map→reduce pipeline runs. */
+const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
+  const [done, setDone] = useState(0);
+  useEffect(() => {
+    setDone(0);
+    const t = setInterval(() => setDone(d => Math.min(d + 1, steps.length - 1)), 7000);
+    return () => clearInterval(t);
+  }, [steps.length]);
+
+  return (
+    <div className="k-card p-6 max-w-2xl mx-auto">
+      <div className="flex items-center gap-3 mb-5">
+        <span className="loading loading-spinner loading-md text-primary" />
+        <div>
+          <p className="font-semibold">Running confidential analysis…</p>
+          <p className="text-xs text-base-content/55">
+            Each document is analyzed one by one in the Chainlink TEE, then reduced to a decision.
+          </p>
+        </div>
+      </div>
+      <ul className="space-y-2.5">
+        {steps.map((s, i) => {
+          const isDone = i < done;
+          const isCurrent = i === done;
+          return (
+            <li key={s} className="flex items-center gap-3 text-sm">
+              <span
+                className={`grid place-items-center h-5 w-5 rounded-full shrink-0 ${
+                  isDone ? "bg-success text-success-content" : isCurrent ? "bg-primary/15" : "bg-base-300"
+                }`}
+              >
+                {isDone ? (
+                  <CheckIcon className="h-3 w-3" />
+                ) : isCurrent ? (
+                  <span className="loading loading-spinner loading-xs" />
+                ) : (
+                  i + 1
+                )}
+              </span>
+              <span className={isDone ? "text-base-content/60" : isCurrent ? "font-medium" : "text-base-content/45"}>
+                {s}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
+
 // ---------------------------------------------------------------- the flow
 
 export const KreditoFlow = () => {
@@ -170,6 +244,7 @@ export const KreditoFlow = () => {
   const [archetype, setArchetype] = useState<string>("strong");
   const [docs, setDocs] = useState<Record<string, UploadedDocument | null>>({});
   const [submitting, setSubmitting] = useState(false);
+  const [analyzingSteps, setAnalyzingSteps] = useState<string[]>([]);
   const [result, setResult] = useState<StoredScore | null>(null);
 
   const set = (k: keyof typeof profile) => (v: string) => setProfile(p => ({ ...p, [k]: v }));
@@ -199,8 +274,41 @@ export const KreditoFlow = () => {
     }
   };
 
+  // Preload the sample documents dropped into public/docs into the evidence slots.
+  const loadSamples = async () => {
+    try {
+      const res = await fetch("/api/lendsignal/sample-docs");
+      const json = await res.json();
+      const sample: UploadedDocument[] = json.documents ?? [];
+      if (!sample.length) {
+        notification.error("No sample documents found in public/docs/.");
+        return;
+      }
+      const next: Record<string, UploadedDocument | null> = { ...docs };
+      const taken = new Set(Object.keys(next).filter(k => next[k]));
+      for (const d of sample) {
+        let key = detectSlot(d.filename);
+        if (!key || taken.has(key)) key = SLOT_KEYS.find(k => !taken.has(k)) ?? null;
+        if (key) {
+          next[key] = d;
+          taken.add(key);
+        }
+      }
+      setDocs(next);
+      notification.success(`Loaded ${sample.length} sample document(s)`);
+    } catch {
+      notification.error("Could not load sample documents.");
+    }
+  };
+
   const runCreditCheck = async () => {
     setSubmitting(true);
+    const steps =
+      uploadedDocs.length > 0
+        ? uploadedDocs.map(d => `Analyze ${d.filename}`)
+        : REQUIRED_DOCS.map(d => `Analyze ${d.label}`);
+    steps.push("Reduce to a final decision", "Off-chain profile analysis");
+    setAnalyzingSteps(steps);
     try {
       const apiProfile = {
         legalName: profile.legalName,
@@ -246,7 +354,8 @@ export const KreditoFlow = () => {
             title="Become a credit identity"
             subtitle="Submit your business profile and upload each piece of evidence. The connected wallet becomes the onchain identifier used by the certificate and the lending vault."
           />
-          <div className="grid lg:grid-cols-3 gap-5">
+          {submitting && <AnalyzingProgress steps={analyzingSteps} />}
+          <div className={submitting ? "hidden" : "grid lg:grid-cols-3 gap-5"}>
             <div className="lg:col-span-2 space-y-5">
               <Panel eyebrow="Business profile" title="Company information">
                 <div className="grid sm:grid-cols-2 gap-4">
@@ -271,9 +380,14 @@ export const KreditoFlow = () => {
                 eyebrow="Evidence"
                 title="Upload documents"
                 action={
-                  <span className="k-mono text-xs text-base-content/55">
-                    {uploadedDocs.length}/{REQUIRED_DOCS.length}
-                  </span>
+                  <div className="flex items-center gap-2">
+                    <button type="button" onClick={loadSamples} className="btn btn-ghost btn-xs gap-1">
+                      <ArrowUpTrayIcon className="h-3.5 w-3.5" /> Load samples
+                    </button>
+                    <span className="k-mono text-xs text-base-content/55">
+                      {uploadedDocs.length}/{REQUIRED_DOCS.length}
+                    </span>
+                  </div>
                 }
               >
                 <div className="grid sm:grid-cols-2 gap-2.5">
@@ -353,7 +467,7 @@ export const KreditoFlow = () => {
               <p className="text-center text-xs text-base-content/45 -mt-2">Attested in the Chainlink TEE · ~10–40s</p>
             </div>
           </div>
-          <RecentChecks borrower={address} />
+          {!submitting && <RecentChecks borrower={address} />}
         </>
       )}
 
@@ -509,20 +623,67 @@ const ScoreSection = ({
         </div>
       </div>
 
-      {/* Per-document analysis — each uploaded file analyzed one by one */}
+      {/* All Confidential AI queries that ran (per-section + reduce + off-chain) */}
+      {result.inferences && result.inferences.length > 0 && (
+        <Panel eyebrow={`${result.inferences.length} queries`} title="Confidential AI requests" className="mt-5">
+          <div className="divide-y divide-base-300">
+            {result.inferences.map(q => (
+              <div key={q.inferenceId} className="flex items-center gap-3 py-2 text-sm">
+                <span className={`badge badge-sm shrink-0 ${q.attested ? "badge-success" : "badge-ghost"}`}>
+                  {q.attested ? "TEE" : "—"}
+                </span>
+                <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
+                <code className="k-mono text-xs text-base-content/55 truncate flex-1">{q.inferenceId}</code>
+              </div>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-base-content/50">
+            One attested request per document, one for the final decision, plus the off-chain profile query.
+          </p>
+        </Panel>
+      )}
+
+      {/* Per-document analysis (map) → final decision (reduce) */}
       {result.confidentialAi.document_analysis.length > 0 && (
-        <Panel eyebrow="Per document" title="Document analysis" className="mt-5">
+        <Panel
+          eyebrow={`Per document · ${result.confidentialAi.document_analysis.length} analyzed`}
+          title="Document analysis"
+          className="mt-5"
+          action={
+            <span className={`badge ${DECISION_BADGE[result.confidentialAi.decision]}`}>
+              {DECISION_LABEL[result.confidentialAi.decision]}
+            </span>
+          }
+        >
           <div className="divide-y divide-base-300">
             {result.confidentialAi.document_analysis.map((d, i) => (
-              <div key={`${d.filename}-${i}`} className="flex items-start gap-3 py-2.5 text-sm">
-                <span className={`badge badge-sm shrink-0 mt-0.5 ${SIGNAL_BADGE[d.signal]}`}>{d.signal}</span>
-                <div className="min-w-0">
-                  <p className="font-medium truncate">{d.filename}</p>
-                  <p className="text-base-content/70">{d.finding}</p>
+              <div key={`${d.filename}-${i}`} className="py-3">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className={`badge badge-sm ${SIGNAL_BADGE[d.signal]}`}>{d.signal}</span>
+                  <span className="font-medium text-sm">{d.documentType}</span>
+                  <code className="k-mono text-xs text-base-content/45">{d.filename}</code>
+                  {!d.reliable && <span className="badge badge-error badge-sm">unreliable</span>}
+                </div>
+                <p className="text-sm text-base-content/70 mt-1">{d.finding}</p>
+                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-xs text-base-content/55">
+                  <span className="flex items-center gap-1">
+                    authenticity{" "}
+                    <span className={`badge badge-xs ${BAND_BADGE[d.authenticity]}`}>{d.authenticity}</span>
+                  </span>
+                  <span className="flex items-center gap-1">
+                    consistency <span className={`badge badge-xs ${BAND_BADGE[d.consistency]}`}>{d.consistency}</span>
+                  </span>
+                  <span className={d.reliable ? "text-success" : "text-error"}>
+                    {d.reliable ? "✓ reliable" : "✕ not reliable"}
+                  </span>
                 </div>
               </div>
             ))}
           </div>
+          <p className="mt-3 text-xs text-base-content/50">
+            Each document is checked for authenticity + consistency, then the{" "}
+            {result.confidentialAi.document_analysis.length} summaries are reduced into the final decision above.
+          </p>
         </Panel>
       )}
 
