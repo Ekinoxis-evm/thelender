@@ -1,8 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Hex, createWalletClient, http, isAddress, publicActions } from "viem";
+import { type Hex, createPublicClient, createWalletClient, http, isAddress, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
-import { fullName, kreditoControllerAbi, labelToNode, normalizeLabel } from "~~/lib/kredito";
+import {
+  fullName,
+  kreditoControllerAbi,
+  labelToNode,
+  mintMessage,
+  normalizeLabel,
+  sanitizeProfile,
+} from "~~/lib/kredito";
 import { getDecision, insertIdentity, isLabelTaken } from "~~/services/kredito/identities";
 
 export const runtime = "nodejs";
@@ -18,13 +25,13 @@ function sepoliaRpc() {
  * is never touched here; only the approval decision + attestation hash are read.
  */
 export async function POST(req: NextRequest) {
-  let body: { wallet?: string; label?: string; profile?: Record<string, string> };
+  let body: { wallet?: string; label?: string; profile?: Record<string, string>; signature?: Hex };
   try {
     body = await req.json();
   } catch {
     return NextResponse.json({ error: "Invalid JSON" }, { status: 400 });
   }
-  const { wallet, label: rawLabel, profile } = body;
+  const { wallet, label: rawLabel, profile, signature } = body;
 
   if (!wallet || !isAddress(wallet)) {
     return NextResponse.json({ error: "Valid wallet required" }, { status: 400 });
@@ -34,6 +41,21 @@ export async function POST(req: NextRequest) {
     label = normalizeLabel(String(rawLabel ?? ""));
   } catch (e) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
+  }
+
+  // AuthN: the caller must prove control of `wallet` by signing the bound message. verifyMessage
+  // handles EOA + Privy smart wallets (ERC-1271/6492). Mint is idempotent, so replay is harmless.
+  const reader = createPublicClient({ chain: sepolia, transport: http(sepoliaRpc()) });
+  let proven = false;
+  if (signature) {
+    try {
+      proven = await reader.verifyMessage({ address: wallet, message: mintMessage(wallet, label), signature });
+    } catch {
+      proven = false;
+    }
+  }
+  if (!proven) {
+    return NextResponse.json({ error: "Signature does not prove control of the wallet" }, { status: 401 });
   }
 
   const decision = await getDecision(wallet);
@@ -69,6 +91,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: `Mint failed: ${(e as Error).message}` }, { status: 502 });
   }
 
+  const clean = sanitizeProfile(profile);
   const identity = await insertIdentity({
     label,
     wallet_address: wallet,
@@ -77,10 +100,10 @@ export async function POST(req: NextRequest) {
     status: "approved",
     attestation_hash: decision.attestation_hash,
     tx_hash: txHash,
-    url: profile?.url ?? null,
-    twitter: profile?.twitter ?? null,
-    avatar_url: profile?.avatar_url ?? null,
-    display_name: profile?.display_name ?? null,
+    url: clean.url,
+    twitter: clean.twitter,
+    avatar_url: clean.avatar_url,
+    display_name: clean.display_name,
   });
 
   return NextResponse.json({ identity, txHash });

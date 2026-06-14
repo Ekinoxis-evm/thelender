@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { useAccount } from "wagmi";
-import type { EnsIdentity } from "~~/lib/kredito";
+import { useAccount, useSignMessage } from "wagmi";
+import { type EnsIdentity, isHttpUrl, isTwitterHandle, mintMessage, normalizeLabel } from "~~/lib/kredito";
 
 type Lookup = {
   decisionStatus?: string;
@@ -22,12 +22,16 @@ const STATUS_BADGE: Record<string, string> = {
 };
 
 function IdentityCard({ id }: { id: EnsIdentity }) {
+  // Allowlist schemes before rendering — never trust stored profile values as hrefs/src.
+  const safeAvatar = isHttpUrl(id.avatar_url) ? id.avatar_url : null;
+  const safeUrl = isHttpUrl(id.url) ? id.url : null;
+  const safeTwitter = isTwitterHandle(id.twitter) ? id.twitter : null;
   return (
     <div className="card bg-base-100 shadow-xl max-w-sm">
       <div className="card-body items-center text-center">
-        {id.avatar_url ? (
+        {safeAvatar ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={id.avatar_url} alt="" className="w-20 h-20 rounded-full object-cover" />
+          <img src={safeAvatar} alt="" className="w-20 h-20 rounded-full object-cover" />
         ) : (
           <div className="w-20 h-20 rounded-full bg-base-300" />
         )}
@@ -35,14 +39,14 @@ function IdentityCard({ id }: { id: EnsIdentity }) {
         <p className="font-mono text-sm opacity-70">{id.full_name}</p>
         <span className={`badge ${STATUS_BADGE[id.status] ?? "badge-ghost"} mt-1`}>{id.status}</span>
         <div className="flex gap-3 mt-3 text-sm">
-          {id.url && (
-            <a className="link link-primary" href={id.url} target="_blank" rel="noreferrer">
+          {safeUrl && (
+            <a className="link link-primary" href={safeUrl} target="_blank" rel="noreferrer">
               Website
             </a>
           )}
-          {id.twitter && (
-            <a className="link link-primary" href={`https://x.com/${id.twitter}`} target="_blank" rel="noreferrer">
-              @{id.twitter}
+          {safeTwitter && (
+            <a className="link link-primary" href={`https://x.com/${safeTwitter}`} target="_blank" rel="noreferrer">
+              @{safeTwitter}
             </a>
           )}
         </div>
@@ -53,6 +57,7 @@ function IdentityCard({ id }: { id: EnsIdentity }) {
 
 export default function IdentityPage() {
   const { address } = useAccount();
+  const { signMessageAsync } = useSignMessage();
   const [lookup, setLookup] = useState<Lookup | null>(null);
   const [label, setLabel] = useState("");
   const [avail, setAvail] = useState<{ available?: boolean; error?: string } | null>(null);
@@ -86,10 +91,12 @@ export default function IdentityPage() {
     setMinting(true);
     setError(null);
     try {
+      const nlabel = normalizeLabel(label); // same normalized value the server verifies + mints
+      const signature = await signMessageAsync({ message: mintMessage(address, nlabel) });
       const r = await fetch("/api/identity/mint", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ wallet: address, label, profile }),
+        body: JSON.stringify({ wallet: address, label: nlabel, profile, signature }),
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.error ?? "Mint failed");

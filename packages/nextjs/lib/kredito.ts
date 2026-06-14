@@ -42,6 +42,33 @@ export function labelToNode(label: string): Hex {
   return namehash(fullName(label));
 }
 
+/**
+ * The exact message a wallet must sign to authorize minting its own identity. Binds the wallet AND
+ * the (normalized) label, so the server can prove the caller controls `wallet` before minting.
+ * Build with the NORMALIZED label on both client and server so the strings match.
+ */
+export const mintMessage = (wallet: string, normalizedLabel: string) =>
+  `KreditoOne — claim credit identity\nname: ${normalizedLabel}.${KREDITO_PARENT_NAME}\nwallet: ${wallet}`;
+
+export const isHttpUrl = (u?: string | null): u is string => !!u && /^https?:\/\//i.test(u);
+const TWITTER_RE = /^[A-Za-z0-9_]{1,15}$/;
+export const isTwitterHandle = (h?: string | null): h is string => !!h && TWITTER_RE.test(h);
+
+/** Drop any profile field that fails its scheme/format allowlist (prevents stored javascript: URLs etc.). */
+export function sanitizeProfile(p?: { display_name?: string; url?: string; twitter?: string; avatar_url?: string }): {
+  display_name: string | null;
+  url: string | null;
+  twitter: string | null;
+  avatar_url: string | null;
+} {
+  return {
+    display_name: p?.display_name ? p.display_name.trim().slice(0, 80) : null,
+    url: isHttpUrl(p?.url) ? (p?.url as string) : null,
+    twitter: isTwitterHandle(p?.twitter) ? (p?.twitter as string) : null,
+    avatar_url: isHttpUrl(p?.avatar_url) ? (p?.avatar_url as string) : null,
+  };
+}
+
 /** Minimal ABI for the issuer mint/revoke path (full ABI is auto-generated on deploy). */
 export const kreditoControllerAbi = [
   {
