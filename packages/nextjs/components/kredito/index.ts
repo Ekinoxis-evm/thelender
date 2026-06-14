@@ -5,4 +5,3 @@ export { Stat, StatGrid } from "./Stat";
 export { HashChip } from "./HashChip";
 export { ScoreMeter } from "./ScoreMeter";
 export { SignalRow } from "./SignalRow";
-export { CertificateCard } from "./CertificateCard";

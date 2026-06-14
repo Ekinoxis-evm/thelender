@@ -17,7 +17,7 @@ import { HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~
 import { IdentitySection } from "~~/components/kredito/IdentitySection";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
 import { formatUsd } from "~~/kredito/format";
-import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
+import { EMPTY_PROFILE, POOL } from "~~/kredito/pool";
 import { type StoredScore, saveScoreResult, toUiRiskTier } from "~~/kredito/scoreStore";
 import { useKreditoWallet } from "~~/kredito/useWallet";
 import type { UploadedDocument } from "~~/services/lendsignal/types";
@@ -259,8 +259,7 @@ export const KreditoFlow = () => {
   const [step, setStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
 
-  const [profile, setProfile] = useState(DEMO_PROFILE);
-  const [archetype, setArchetype] = useState<string>("strong");
+  const [profile, setProfile] = useState(EMPTY_PROFILE);
   const [docs, setDocs] = useState<Record<string, UploadedDocument | null>>({});
   const [submitting, setSubmitting] = useState(false);
   const [analyzingSteps, setAnalyzingSteps] = useState<string[]>([]);
@@ -328,11 +327,12 @@ export const KreditoFlow = () => {
   }, []);
 
   const runCreditCheck = async () => {
+    if (uploadedDocs.length === 0) {
+      notification.error("Upload your business documents to run the credit check.");
+      return;
+    }
     setSubmitting(true);
-    const steps =
-      uploadedDocs.length > 0
-        ? uploadedDocs.map(d => `Analyze ${d.filename}`)
-        : REQUIRED_DOCS.map(d => `Analyze ${d.label}`);
+    const steps = uploadedDocs.map(d => `Analyze ${d.filename}`);
     steps.push("Reduce to a final decision", "Off-chain profile analysis");
     setAnalyzingSteps(steps);
     try {
@@ -343,15 +343,14 @@ export const KreditoFlow = () => {
         requestedLoanUsd: profile.requestedLoanUsd,
         ensName: profile.ensName || undefined,
       };
-      // Uploaded documents take the real path; otherwise the chosen demo archetype.
-      const base = { profile: apiProfile, borrower: address };
-      // The loaded case tunes the (mock) bureau + off-chain signal to match it; the
-      // document-based AI score stays real (no clamp on uploads).
+      // The loaded sample case tunes the (mock) CRS bureau; the document-based AI score is real.
       const strengthHint = loadedCase === "risk" ? "weak" : loadedCase === "success" ? "strong" : undefined;
-      const body =
-        uploadedDocs.length > 0
-          ? { ...base, documents: uploadedDocs, ...(strengthHint ? { strength: strengthHint } : {}) }
-          : { ...base, demoProfileId: archetype };
+      const body = {
+        profile: apiProfile,
+        borrower: address,
+        documents: uploadedDocs,
+        ...(strengthHint ? { strength: strengthHint } : {}),
+      };
 
       const res = await fetch("/api/lendsignal/score", {
         method: "POST",
@@ -453,32 +452,6 @@ export const KreditoFlow = () => {
             </div>
 
             <div className="space-y-5">
-              <Panel eyebrow="Demo" title="Borrower profile">
-                <div className="space-y-2">
-                  {DEMO_BORROWERS.map(b => (
-                    <button
-                      key={b.key}
-                      type="button"
-                      onClick={() => setArchetype(b.key)}
-                      disabled={uploadedDocs.length > 0}
-                      className={`w-full text-left rounded-field border px-3 py-2.5 transition-colors disabled:opacity-40 ${
-                        archetype === b.key && uploadedDocs.length === 0
-                          ? "border-primary bg-primary/5"
-                          : "border-base-300 hover:bg-base-200"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-sm">{b.label}</span>
-                        <span className="k-mono text-xs text-base-content/50">
-                          {b.ai}/{b.bureau}
-                        </span>
-                      </div>
-                      <p className="text-xs text-base-content/55 mt-0.5">{b.blurb}</p>
-                    </button>
-                  ))}
-                </div>
-              </Panel>
-
               <Panel eyebrow="Wallet" title="Credit identity">
                 {address ? (
                   <div className="space-y-2.5">
@@ -835,8 +808,8 @@ const BorrowSection = ({
   onNext: () => void;
 }) => {
   const eligible = result?.eligible ?? false;
-  const limit = result?.bureau.recommendedCreditLimitUsd ?? DEMO_VAULT.liquidityUsd;
-  const fee = Math.round((limit * DEMO_VAULT.originationFeeBps) / 10_000);
+  const limit = result?.bureau.recommendedCreditLimitUsd ?? 0;
+  const fee = Math.round((limit * POOL.originationFeeBps) / 10_000);
   return (
     <>
       <PageHeader
@@ -858,7 +831,7 @@ const BorrowSection = ({
             </div>
             <div>
               <p className="k-eyebrow mb-1">Min score</p>
-              <p className="k-mono text-2xl font-semibold">{DEMO_VAULT.minScore}</p>
+              <p className="k-mono text-2xl font-semibold">{POOL.minScore}</p>
             </div>
           </div>
         ) : (
@@ -883,14 +856,14 @@ const LiquiditySection = ({ onBack }: { onBack: () => void }) => (
       step={5}
       eyebrow="Liquidity & default fund"
       title="Where the money comes from"
-      subtitle="Liquidity providers fund the vault; origination fees build a reserve that covers defaults. (Liquidity layer — demo.)"
+      subtitle="Liquidity providers fund p2p pools at the 12% APY default rate; origination fees build a reserve that covers defaults. (Liquidity layer — demo.)"
     />
     <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
       {[
-        { label: "Vault liquidity", value: formatUsd(DEMO_VAULT.liquidityUsd, true) },
-        { label: "Default reserve", value: formatUsd(DEMO_VAULT.reserveUsd, true) },
-        { label: "Outstanding", value: formatUsd(DEMO_VAULT.totalOutstandingUsd, true) },
-        { label: "Origination fee", value: `${DEMO_VAULT.originationFeeBps / 100}%` },
+        { label: "Default APY", value: `${POOL.aprBps / 100}%` },
+        { label: "Min eligible score", value: String(POOL.minScore) },
+        { label: "Origination fee", value: `${POOL.originationFeeBps / 100}%` },
+        { label: "Funding model", value: "p2p pools" },
       ].map(s => (
         <div key={s.label} className="k-card p-5">
           <p className="k-eyebrow mb-1">{s.label}</p>

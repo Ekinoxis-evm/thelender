@@ -1,10 +1,8 @@
 "use client";
 
 import { ArrowRightIcon } from "@heroicons/react/24/outline";
-import { CertificateCard } from "~~/components/kredito";
 import { FLOW } from "~~/kredito/flow";
-import { formatUsd } from "~~/kredito/format";
-import { DEMO_CERTIFICATE, DEMO_VAULT } from "~~/kredito/mock";
+import { POOL } from "~~/kredito/pool";
 
 /**
  * Logged-out marketing landing. The single CTA triggers the wallet connection;
@@ -17,13 +15,15 @@ export const Landing = ({ onConnect }: { onConnect?: () => void }) => {
       <section className="k-hero text-white">
         <div className="mx-auto max-w-6xl px-5 py-16 sm:py-20 grid lg:grid-cols-2 gap-12 items-center">
           <div>
-            <p className="k-eyebrow text-white/60 mb-4">Onchain credit score · confidential AI + bureau</p>
+            <p className="k-eyebrow text-white/60 mb-4">Onchain credit identity · confidential AI</p>
             <h1 className="k-display text-4xl sm:text-5xl font-semibold leading-[1.05]">
-              An <span className="text-accent">onchain credit score</span> for any business wallet.
+              An <span className="text-accent">onchain credit identity</span> for any business wallet.
             </h1>
             <p className="mt-5 text-white/70 text-lg leading-relaxed max-w-xl">
-              Kredito blends a Chainlink Confidential AI attestation with a credit-bureau signal into a single,
-              updateable score — issued onchain as a soulbound <span className="text-white">Credit Certificate</span>.
+              Kreditos blends a Chainlink Confidential AI attestation with a credit-bureau signal into a single,
+              updateable score — recorded onchain as your{" "}
+              <span className="text-white">kredito.eth credit identity</span> and released as a private proof to p2p
+              funding pools.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <button className="btn btn-primary" onClick={onConnect} type="button">
@@ -35,19 +35,20 @@ export const Landing = ({ onConnect }: { onConnect?: () => void }) => {
           </div>
 
           <div className="flex justify-center lg:justify-end">
-            <CertificateCard cert={DEMO_CERTIFICATE} />
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/kredito-lockup-white.svg" alt="Kreditos" className="w-64 max-w-full opacity-95" />
           </div>
         </div>
       </section>
 
-      {/* Stats strip */}
+      {/* Pool terms */}
       <section className="border-b border-base-300 bg-base-100">
         <div className="mx-auto max-w-6xl px-5 py-6 grid grid-cols-2 sm:grid-cols-4 gap-6">
           {[
-            { label: "Vault liquidity", value: formatUsd(DEMO_VAULT.liquidityUsd, true) },
-            { label: "Default reserve", value: formatUsd(DEMO_VAULT.reserveUsd, true) },
-            { label: "Min eligible score", value: DEMO_VAULT.minScore.toString() },
-            { label: "Origination fee", value: `${DEMO_VAULT.originationFeeBps / 100}%` },
+            { label: "Default APY", value: `${POOL.aprBps / 100}%` },
+            { label: "Min eligible score", value: POOL.minScore.toString() },
+            { label: "Origination fee", value: `${POOL.originationFeeBps / 100}%` },
+            { label: "Funding model", value: "p2p pools" },
           ].map(s => (
             <div key={s.label}>
               <p className="k-eyebrow mb-1">{s.label}</p>
