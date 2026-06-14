@@ -14,6 +14,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { CertificateCard, HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
+import { RecentChecks } from "~~/components/kredito/RecentChecks";
 import { formatUsd } from "~~/kredito/format";
 import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
 import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
@@ -341,6 +342,7 @@ export const KreditoFlow = () => {
               <p className="text-center text-xs text-base-content/45 -mt-2">Attested in the Chainlink TEE · ~10–40s</p>
             </div>
           </div>
+          <RecentChecks borrower={address} />
         </>
       )}
 
