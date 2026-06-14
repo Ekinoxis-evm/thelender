@@ -28,12 +28,13 @@ export const FLOW: FlowStep[] = [
     summary: "Chainlink Confidential AI and the CRS bureau are blended into a single creditworthiness score.",
   },
   {
-    key: "certificate",
+    key: "identity",
     step: 3,
-    label: "Certificate",
-    href: "/certificate",
-    tagline: "Soulbound credit NFT",
-    summary: "An updateable Credit Certificate is minted as a soulbound NFT, gated by your ENS identity.",
+    label: "Identity",
+    href: "/identity",
+    tagline: "ENS credit identity",
+    summary:
+      "Your approved score becomes a Kreditos credit identity — a kredito.eth name holding your financial ID, status and reputation onchain.",
   },
   {
     key: "borrow",
@@ -41,7 +42,7 @@ export const FLOW: FlowStep[] = [
     label: "Borrow",
     href: "/borrow",
     tagline: "Undercollateralized loan",
-    summary: "The vault checks the certificate and ENS gate, then pays out a working-capital loan.",
+    summary: "The pool checks your credit identity, then pays out an undercollateralized working-capital loan.",
   },
   {
     key: "liquidity",
