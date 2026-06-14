@@ -4,8 +4,9 @@ import Image from "next/image";
 import Link from "next/link";
 import { hardhat } from "viem/chains";
 import { GlobeAltIcon } from "@heroicons/react/24/outline";
+import { IdentityChip } from "~~/components/kredito";
 import { FaucetButton, PrivyConnectButton } from "~~/components/scaffold-eth";
-import { useTargetNetwork } from "~~/hooks/scaffold-eth";
+import { useKreditoIdentity, useTargetNetwork } from "~~/hooks/scaffold-eth";
 
 const BrandMark = () => (
   <Link href="/" passHref className="flex items-center ml-3 shrink-0" aria-label="Kredito">
@@ -39,6 +40,8 @@ const BrandMark = () => (
 export const Header = () => {
   const { targetNetwork } = useTargetNetwork();
   const isLocalNetwork = targetNetwork.id === hardhat.id;
+  // Resolve the connected wallet's Kredito ENSv2 identity (NOT mainnet ENS) for the header chip.
+  const { identity } = useKreditoIdentity();
 
   return (
     <div className="sticky lg:static top-0 navbar bg-base-100 min-h-0 shrink-0 justify-between z-20 border-b border-base-300 px-2 sm:px-4">
@@ -46,7 +49,8 @@ export const Header = () => {
         <BrandMark />
       </div>
       <div className="navbar-end gap-2">
-        <Link href="/ens" className="btn btn-ghost btn-sm gap-1.5">
+        {identity && <IdentityChip identity={identity} hideLabelOnXs />}
+        <Link href="/verify" className="btn btn-ghost btn-sm gap-1.5">
           <GlobeAltIcon className="h-4 w-4" />
           <span className="hidden sm:inline">Verify</span>
         </Link>

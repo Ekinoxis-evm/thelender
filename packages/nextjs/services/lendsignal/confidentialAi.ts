@@ -21,7 +21,7 @@ const BASE_URL = (
 const API_KEY = process.env.CHAINLINK_CONFIDENTIAL_AI_API_KEY ?? "";
 const MODEL = process.env.CHAINLINK_CONFIDENTIAL_AI_MODEL ?? "gemma4";
 
-/** True when an API key is configured — otherwise the route uses a mock fallback. */
+/** True when an API key is configured. The route throws a clear error when it is not. */
 export const isConfidentialAiConfigured = () => API_KEY.length > 0;
 
 export type InferenceStatus = "queued" | "preparing-resources" | "processing" | "completed" | "failed";

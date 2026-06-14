@@ -36,7 +36,9 @@ export const privyConfig: PrivyClientConfig = {
     },
     showWalletUIs: true,
   },
-  loginMethods: ["email", "wallet", "google"],
+  // Email + Google only — no external wallet connectors. Every user gets an embedded wallet on
+  // login (→ their sponsored smart wallet), keeping one consistent gasless UX with no wallet setup.
+  loginMethods: ["email", "google"],
   defaultChain,
   supportedChains,
   appearance: {

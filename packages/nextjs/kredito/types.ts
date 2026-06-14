@@ -12,11 +12,9 @@ export type CertStatus = "none" | "pending" | "active" | "expired" | "revoked" |
 export type CreditCertificate = {
   borrower: Address;
   confidentialAiScore: number; // Chainlink Confidential AI (0..1000)
-  bureauScore: number; // CRS bureau (0..1000)
-  combinedScore: number; // AI*70% + bureau*30%
+  combinedScore: number; // == confidentialAiScore
   riskTier: RiskTier;
   attestationHash: Hex;
-  bureauReportHash: Hex;
   evidenceDigest: Hex;
   ensName?: string;
   status: CertStatus;

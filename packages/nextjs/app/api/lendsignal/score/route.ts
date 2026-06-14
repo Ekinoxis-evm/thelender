@@ -1,29 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAiConfig } from "~~/services/kredito/admin";
 import { isConfidentialAiConfigured } from "~~/services/lendsignal/confidentialAi";
-import { type BorrowerStrength, evaluateBureau } from "~~/services/lendsignal/creditBureau";
-import { getDemoProfile } from "~~/services/lendsignal/demoProfiles";
 import { persistCreditCheck } from "~~/services/lendsignal/persistence";
 import { runCreditPipeline } from "~~/services/lendsignal/pipeline";
-import { applyDemoBand, buildScoreResult, fallbackAiResult, fallbackOffchain } from "~~/services/lendsignal/score";
-import type {
-  BusinessProfile,
-  ConfidentialAiResult,
-  InferenceRef,
-  OffchainProfileSignal,
-  UploadedDocument,
-} from "~~/services/lendsignal/types";
+import { buildScoreResult } from "~~/services/lendsignal/score";
+import type { BusinessProfile, UploadedDocument } from "~~/services/lendsignal/types";
 
 /**
  * POST /api/lendsignal/score
  *
  * Map → reduce credit pipeline (server-side; the API key never reaches the client):
- *   1. one Confidential AI inference PER document (section-specific prompts), in parallel
+ *   1. one Confidential AI inference PER uploaded document (section-specific prompts), in parallel
  *   2. a reduce inference → overall decision
- *   3. an off-chain profile inference (parallel) — complementary signal
- *   4. CRS bureau (mock) + combine 70/30 → onchain ScoreInputs
+ *   3. assemble onchain-ready ScoreInputs from the AI score
  *
- * Falls back to a deterministic mock (attested:false) when no API key is set.
+ * The score is 100% the Confidential AI score. There is NO mock/demo/synthetic
+ * fallback: if the API key is missing or any inference fails, this returns a clear
+ * 4xx/5xx error so the UI shows a real error rather than a fake score.
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,8 +25,6 @@ export const maxDuration = 300;
 type RequestBody = {
   profile: BusinessProfile;
   documents?: UploadedDocument[];
-  demoProfileId?: string;
-  strength?: BorrowerStrength;
   /** Connected wallet (credit identity) — stored with the check. */
   borrower?: string;
 };
@@ -54,26 +45,27 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  // Resolve documents + the borrower-strength hint (drives the mock bureau and any fallback).
-  let documents: UploadedDocument[] = [];
-  let strength: BorrowerStrength = body.strength ?? "medium";
-
-  const demo = body.demoProfileId ? getDemoProfile(body.demoProfileId) : undefined;
-  if (demo) {
-    strength = demo.strength;
-    documents = demo.documents.map(doc => ({
-      filename: doc.filename,
-      contentType: "text/plain",
-      contentBase64: Buffer.from(doc.content, "utf-8").toString("base64"),
-    }));
-  } else if (body.documents?.length) {
-    documents = body.documents;
+  const documents: UploadedDocument[] = body.documents ?? [];
+  if (documents.length === 0) {
+    return NextResponse.json(
+      { error: "no_documents", message: "Upload your business documents to run a credit check." },
+      { status: 400 },
+    );
   }
-
   if (documents.length > 10) {
     return NextResponse.json(
       { error: "invalid_request", message: "At most 10 documents are allowed." },
       { status: 400 },
+    );
+  }
+
+  if (!isConfidentialAiConfigured()) {
+    return NextResponse.json(
+      {
+        error: "ai_not_configured",
+        message: "Confidential AI is not configured — set CHAINLINK_CONFIDENTIAL_AI_API_KEY to run credit analysis.",
+      },
+      { status: 503 },
     );
   }
 
@@ -83,61 +75,31 @@ export async function POST(req: NextRequest) {
   // Admin-managed model + system prompts (Supabase ai_config; falls back to code defaults).
   const cfg = await getAiConfig();
 
-  // --- Step 1: the pipeline (per-section + reduce) + the off-chain query ---
-  let ai: ConfidentialAiResult;
-  let attested = false;
-  let inferenceId: string;
-  let offchain: OffchainProfileSignal | undefined;
-  let inferences: InferenceRef[] = [];
-  let note: string | undefined;
-
-  if (isConfidentialAiConfigured()) {
-    const pipe = await runCreditPipeline(profile, documents, strength, {
+  try {
+    // --- Map → reduce pipeline (per-section + reduce). Throws on any failure. ---
+    const pipe = await runCreditPipeline(profile, documents, {
       model: cfg.model,
       sectionSystemPrompt: cfg.section_system_prompt,
       reduceSystemPrompt: cfg.reduce_system_prompt,
     });
 
-    ai = pipe.ai;
-    attested = pipe.attested;
-    inferenceId = pipe.reduceInferenceId ?? `mock-${nowSeconds}`;
-    inferences = pipe.inferences;
+    // Assemble onchain-ready ScoreInputs (score == Confidential AI score).
+    const result = buildScoreResult({
+      inferenceId: pipe.reduceInferenceId,
+      model: cfg.model,
+      attested: pipe.attested,
+      ai: pipe.ai,
+      documentsBase64,
+      nowSeconds,
+      inferences: pipe.inferences,
+    });
 
-    // Off-chain profile signal is MOCKED (fast, deterministic) — shown apart, not onchain.
-    offchain = fallbackOffchain(strength);
-    inferences.push({ label: "Off-chain profile (mock)", inferenceId: offchain.inferenceId, attested: false });
+    // Persist the normalized check (best-effort; never blocks the response on failure).
+    await persistCreditCheck({ result, profile, borrower: body.borrower });
 
-    if (!attested) {
-      note = "Some Confidential AI queries did not finish in time — partial / fallback scoring was used.";
-    }
-  } else {
-    ai = fallbackAiResult(strength);
-    inferenceId = `mock-${nowSeconds}`;
-    offchain = fallbackOffchain(strength);
-    note = "CHAINLINK_CONFIDENTIAL_AI_API_KEY not set — returning a deterministic mock (not attested).";
+    return NextResponse.json(result);
+  } catch (e) {
+    const message = e instanceof Error ? e.message : "Credit analysis failed — please retry.";
+    return NextResponse.json({ error: "scoring_failed", message }, { status: 502 });
   }
-
-  // Demo profiles land on a clearly marked band regardless of live-model variance.
-  if (demo) ai = applyDemoBand(ai, strength);
-
-  // --- Step 2: CRS bureau (mock) ---
-  const bureau = evaluateBureau(profile, strength);
-
-  // --- Step 3: combine 70/30 → onchain-ready ScoreInputs (+ off-chain signal + query ids) ---
-  const result = buildScoreResult({
-    inferenceId,
-    model: cfg.model,
-    attested,
-    ai,
-    bureau,
-    documentsBase64,
-    nowSeconds,
-    offchain,
-    inferences,
-  });
-
-  // Persist the normalized check (best-effort; never blocks the response on failure).
-  await persistCreditCheck({ result, profile, borrower: body.borrower });
-
-  return NextResponse.json({ ...result, ...(note ? { note } : {}) });
 }

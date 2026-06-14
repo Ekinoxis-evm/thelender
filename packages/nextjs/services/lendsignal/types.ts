@@ -1,21 +1,28 @@
 /**
  * LendSignal shared types — the canonical shape of what a business submits, what
- * the Chainlink Confidential AI Attester returns, what the (mock) CRS bureau
- * returns, and the blended score payload that becomes `ScoreInputs` onchain.
+ * the Chainlink Confidential AI Attester returns, and the score payload that
+ * becomes `ScoreInputs` onchain.
  *
- * These mirror `packages/foundry/contracts/lendsignal/libraries/CreditTypes.sol`
- * so the score the UI shows equals the `combinedScore` the registry computes.
+ * The score is 100% the Confidential AI score (computed in the TEE over the
+ * borrower's own documents). There is NO mock bureau and NO demo/synthetic data.
  */
 
 export type RiskBand = "low" | "medium" | "high";
 
 export type RiskTier = "low_default_risk" | "medium_default_risk" | "high_default_risk";
 
-/** What the borrower fills in on /onboarding. */
+/** What the borrower fills in on the onboarding form. */
 export type BusinessProfile = {
   legalName: string;
-  dbaName?: string;
   country: string;
+  /** Legal entity type (LLC, Corporation, …) — see lib/countries ENTERPRISE_TYPES. */
+  enterpriseType: string;
+  /** Government tax identification number. */
+  taxNumber: string;
+  /** Company registry / incorporation number. */
+  registryNumber: string;
+  // Legacy optional fields (no longer collected by the onboarding form; kept for prompt compatibility).
+  dbaName?: string;
   state?: string;
   city?: string;
   address?: string;
@@ -26,9 +33,6 @@ export type BusinessProfile = {
     role: string;
     ownershipPct?: number;
   };
-  requestedLoanUsd?: number;
-  /** Optional ENS name the business links to its credit identity (Feature 5). */
-  ensName?: string;
 };
 
 /** A document attached to the inference request (base64, ≤10 MiB each, ≤10 total). */
@@ -46,7 +50,7 @@ export type CreditDecision = "approved" | "manual_review" | "denied";
 /**
  * Per-document structured analysis — the model assesses EACH file one by one and
  * decides whether it is reliable and truthful (authenticity + consistency), then
- * these 6 summaries are reduced into the final decision.
+ * these summaries are reduced into the final decision.
  */
 export type DocumentAnalysis = {
   filename: string;
@@ -82,55 +86,18 @@ export type ConfidentialAiResult = {
 };
 
 /**
- * Second, OFF-CHAIN Confidential AI query: assesses the business/industry from the
- * public profile only (no private documents). Complementary signal shown apart —
- * it is NOT blended into the onchain combinedScore.
- */
-export type OffchainProfileSignal = {
-  inferenceId: string;
-  model: string;
-  attested: boolean;
-  /** 0..1000 informational profile/industry score (not onchain). */
-  profileScore: number;
-  industryRisk: RiskBand;
-  marketView: string;
-  summary: string;
-};
-
-/** Normalized CRS credit-bureau signal (Feature 3). Real CRS later, mock now. */
-export type CreditBureauSignal = {
-  provider: "crs_mock" | "crs";
-  reportId: string;
-  businessVerified: boolean;
-  principalMatched: boolean;
-  /** 0..1000 to match the onchain score scale. */
-  bureauScore: number;
-  paymentRisk: RiskBand;
-  fraudRisk: RiskBand;
-  publicRecordsRisk: RiskBand;
-  recommendedCreditLimitUsd: number;
-  delinquencyRisk12mo: number;
-  adverseSignals: string[];
-  positiveSignals: string[];
-  rawReportHash: `0x${string}`;
-  pulledAt: string;
-};
-
-/**
- * The blended payload, 1:1 with `CreditTypes.ScoreInputs` in Solidity. The next
+ * The score payload, 1:1 with `CreditTypes.ScoreInputs` in Solidity. The next
  * step (onchain issuance) passes exactly this to `registry.issueCertificate`.
  */
 export type ScoreInputs = {
   confidentialAiScore: number;
-  bureauScore: number;
   attestationHash: `0x${string}`;
-  bureauReportHash: `0x${string}`;
   evidenceDigest: `0x${string}`;
   /** Unix seconds. */
   expiresAt: number;
 };
 
-/** One Confidential AI query in the pipeline (a section, the reduce, or the profile). */
+/** One Confidential AI query in the pipeline (a section or the reduce). */
 export type InferenceRef = {
   label: string;
   inferenceId: string;
@@ -142,24 +109,17 @@ export type ScoreResult = {
   /** Confidential AI request id (the on-record proof of the inference). */
   inferenceId: string;
   model: string;
-  /**
-   * true  → a real attested inference ran inside the Chainlink TEE.
-   * false → mock fallback (no API key configured); the flow still works for dev.
-   */
+  /** true → a real attested inference ran inside the Chainlink TEE. */
   attested: boolean;
   confidentialAi: ConfidentialAiResult;
-  bureau: CreditBureauSignal;
-  /** Blended 70/30 score, floored to match Solidity integer math. */
+  /** The credit score (equals the Confidential AI score). */
   combinedScore: number;
   riskTier: RiskTier;
   /** combinedScore >= minEligibleScore && tier != high. */
   eligible: boolean;
   minEligibleScore: number;
-  weights: { aiBps: number; bureauBps: number };
   scoreInputs: ScoreInputs;
   usage?: { prompt_tokens: number; completion_tokens: number };
-  /** Second query: off-chain profile/industry signal (shown apart; not onchain). */
-  offchain?: OffchainProfileSignal;
-  /** Every Confidential AI query that ran (per-section + reduce + profile), with ids. */
+  /** Every Confidential AI query that ran (per-section + reduce), with ids. */
   inferences?: InferenceRef[];
 };

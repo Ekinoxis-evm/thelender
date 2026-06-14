@@ -136,3 +136,24 @@ export const useSponsoredWrite = () => {
 
   return { writeContractSponsored, sendCalls, isPending, error, lastTxHash };
 };
+
+/**
+ * Sign a plain message with the active Privy smart wallet (ERC-191; the smart account produces an
+ * ERC-1271 / ERC-6492 signature that `viem.verifyMessage` validates server-side, even before the
+ * account is deployed). Used to prove wallet control to backend routes — e.g. the identity mint.
+ * Signing is off-chain and free; it is NOT a sponsored transaction.
+ */
+export const useSmartWalletSign = () => {
+  const { client } = useSmartWallets();
+  return useCallback(
+    async (message: string): Promise<Hex> => {
+      if (!client) {
+        throw new Error(
+          "Smart wallet client is not ready. Make sure the user is logged in and smart wallets are enabled in the Privy Dashboard.",
+        );
+      }
+      return client.signMessage({ message });
+    },
+    [client],
+  );
+};

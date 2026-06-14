@@ -1,23 +1,18 @@
 /**
- * Score combiner — blends the Confidential AI score and the CRS bureau score the
- * SAME way the onchain registry does, so the UI number equals the future
- * `combinedScore`. Mirrors CreditTypes.sol:
- *   combined = (ai * 7000 + bureau * 3000) / 10000   (integer floor)
- *   >=750 Low · 600..749 Medium · <600 High   ·   eligible = >=750 && tier!=High
+ * Score combiner — the score is 100% the Confidential AI score computed inside the
+ * Chainlink TEE over the borrower's own documents. There is no bureau blend and no
+ * synthetic fallback: if a section/reduce inference fails or returns unparseable
+ * output, parsing THROWS a clear Error and the caller surfaces it to the user.
  *
- * The off-chain profile signal (second query) is NOT blended — it is carried
- * alongside as a complementary, informational read.
+ *   >=750 Low · 600..749 Medium · <600 High   ·   eligible = >=600 && tier!=High
  */
 import type { InferenceSnapshot } from "./confidentialAi";
-import type { BorrowerStrength } from "./creditBureau";
 import type {
   ConfidentialAiResult,
-  CreditBureauSignal,
   CreditDecision,
   DocumentAnalysis,
   DocumentSignal,
   InferenceRef,
-  OffchainProfileSignal,
   RiskBand,
   RiskTier,
   ScoreInputs,
@@ -25,10 +20,7 @@ import type {
 } from "./types";
 import { keccak256, stringToBytes } from "viem";
 
-export const AI_WEIGHT_BPS = 7000;
-export const BUREAU_WEIGHT_BPS = 3000;
-export const BPS_DENOMINATOR = 10_000;
-export const MIN_ELIGIBLE_SCORE = 750;
+export const MIN_ELIGIBLE_SCORE = 600;
 export const CERTIFICATE_VALIDITY_SECONDS = 90 * 24 * 60 * 60; // 90 days
 
 const clampScore = (n: number) => Math.max(0, Math.min(1000, Math.round(n)));
@@ -46,226 +38,61 @@ export function decisionForScore(score: number): CreditDecision {
 }
 
 /**
- * Clamp the AI score into the band expected for a DEMO borrower so the demo lands
- * on a clearly marked tier regardless of model variance. Only applied to demo
- * profiles — real uploads keep the model's raw score. Bands chosen so the 70/30
- * blend with the demo bureau scores stays inside the target tier.
+ * Parse one per-section inference into a document entry + its section score.
+ * Throws if the model output is missing or unparseable — no synthetic fallback.
  */
-export function clampAiToBand(score: number, strength: BorrowerStrength): number {
-  const bands: Record<BorrowerStrength, [number, number]> = {
-    strong: [780, 920],
-    medium: [620, 720],
-    weak: [400, 560],
-  };
-  const [lo, hi] = bands[strength];
-  return Math.max(lo, Math.min(hi, score));
-}
-
-/** Apply the demo band clamp and re-derive tier + decision so everything is consistent. */
-export function applyDemoBand(ai: ConfidentialAiResult, strength: BorrowerStrength): ConfidentialAiResult {
-  const score = clampAiToBand(ai.creditworthiness_score, strength);
-  return { ...ai, creditworthiness_score: score, risk_tier: tierFromScore(score), decision: decisionForScore(score) };
-}
-
-export function combineScore(aiScore: number, bureauScore: number): number {
-  return Math.floor((aiScore * AI_WEIGHT_BPS + bureauScore * BUREAU_WEIGHT_BPS) / BPS_DENOMINATOR);
-}
-
-/**
- * Parse the model's text output into a `ConfidentialAiResult`. Tolerates code
- * fences and surrounding prose; falls back to a strength-derived result so the
- * demo never hard-fails on a malformed generation.
- */
-export function parseAiOutput(output: string | undefined, fallbackStrength: BorrowerStrength): ConfidentialAiResult {
-  const parsed = tryExtractJson(output);
-  if (parsed) {
-    const score = clampScore(Number(parsed.creditworthiness_score ?? 0));
-    return {
-      business_verified: Boolean(parsed.business_verified),
-      document_authenticity: asBand(parsed.document_authenticity),
-      fraud_risk: asBand(parsed.fraud_risk),
-      cashflow_strength: asBand(parsed.cashflow_strength),
-      debt_capacity: asBand(parsed.debt_capacity),
-      creditworthiness_score: score,
-      // Keep tier + decision consistent with the numeric score regardless of what the model said.
-      risk_tier: tierFromScore(score),
-      decision: decisionForScore(score),
-      document_analysis: parseDocumentAnalysis(parsed.document_analysis),
-      reasoning_summary: String(parsed.reasoning_summary ?? "").slice(0, 1000),
-      missing_information: Array.isArray(parsed.missing_information)
-        ? parsed.missing_information.map(String).slice(0, 12)
-        : [],
-    };
-  }
-  return fallbackAiResult(fallbackStrength);
-}
-
-/** Deterministic AI result used for the mock fallback (no API key) or parse failure. */
-export function fallbackAiResult(strength: BorrowerStrength): ConfidentialAiResult {
-  const byStrength: Record<BorrowerStrength, Omit<ConfidentialAiResult, "document_analysis" | "decision">> = {
-    strong: {
-      business_verified: true,
-      document_authenticity: "high",
-      fraud_risk: "low",
-      cashflow_strength: "high",
-      debt_capacity: "high",
-      creditworthiness_score: 815,
-      risk_tier: "low_default_risk",
-      reasoning_summary: "Strong, consistent cash flow and clean filings support a low default risk.",
-      missing_information: [],
-    },
-    medium: {
-      business_verified: true,
-      document_authenticity: "medium",
-      fraud_risk: "low",
-      cashflow_strength: "medium",
-      debt_capacity: "medium",
-      creditworthiness_score: 690,
-      risk_tier: "medium_default_risk",
-      reasoning_summary: "Adequate but uneven cash flow; manual review recommended before full approval.",
-      missing_information: ["recent bank statements"],
-    },
-    weak: {
-      business_verified: false,
-      document_authenticity: "low",
-      fraud_risk: "medium",
-      cashflow_strength: "low",
-      debt_capacity: "low",
-      creditworthiness_score: 520,
-      risk_tier: "high_default_risk",
-      reasoning_summary: "Thin and inconsistent evidence with adverse signals; high default risk.",
-      missing_information: ["tax returns", "A/R aging report", "verified bank statements"],
-    },
-  };
-  const base = byStrength[strength];
-  return { ...base, document_analysis: [], decision: decisionForScore(base.creditworthiness_score) };
-}
-
-/** Parse the off-chain profile query output into a complementary signal. */
-export function parseProfileOutput(
-  snapshot: InferenceSnapshot,
-  model: string,
-  fallbackStrength: BorrowerStrength,
-): OffchainProfileSignal {
-  const parsed = tryExtractJson(snapshot.output);
-  if (parsed) {
-    return {
-      inferenceId: snapshot.id,
-      model,
-      attested: true,
-      profileScore: clampScore(Number(parsed.profile_score ?? 0)),
-      industryRisk: asBand(parsed.industry_risk),
-      marketView: String(parsed.market_view ?? "").slice(0, 400),
-      summary: String(parsed.summary ?? "").slice(0, 600),
-    };
-  }
-  return { ...fallbackOffchain(fallbackStrength), inferenceId: snapshot.id, model, attested: true };
-}
-
-/** Deterministic off-chain signal for the mock fallback / parse failure. */
-export function fallbackOffchain(strength: BorrowerStrength): OffchainProfileSignal {
-  const byStrength: Record<BorrowerStrength, Omit<OffchainProfileSignal, "inferenceId" | "model" | "attested">> = {
-    strong: {
-      profileScore: 800,
-      industryRisk: "low",
-      marketView: "Stable sector with healthy demand and manageable competition.",
-      summary: "Profile and industry signals are favorable for working-capital lending.",
-    },
-    medium: {
-      profileScore: 660,
-      industryRisk: "medium",
-      marketView: "Cyclical/seasonal sector — revenue can swing across the year.",
-      summary: "Profile is adequate but sector volatility warrants a closer look.",
-    },
-    weak: {
-      profileScore: 520,
-      industryRisk: "high",
-      marketView: "Competitive, thin-margin sector with elevated failure rates.",
-      summary: "Profile and sector signals point to elevated credit risk.",
-    },
-  };
-  return { ...byStrength[strength], inferenceId: `mock-${strength}`, model: "mock", attested: false };
-}
-
-/** Parse one per-section inference into a document entry + its section score. */
 export function parseSectionOutput(
   output: string | undefined,
   documentType: string,
   filename: string,
 ): { docAnalysis: DocumentAnalysis; sectionScore: number } {
   const parsed = tryExtractJson(output);
-  if (parsed) {
-    return {
-      docAnalysis: {
-        filename,
-        documentType: String(parsed.document_type ?? documentType).slice(0, 80),
-        present: parsed.present === undefined ? true : Boolean(parsed.present),
-        authenticity: asBand(parsed.authenticity),
-        consistency: asBand(parsed.consistency),
-        reliable: parsed.reliable === undefined ? true : Boolean(parsed.reliable),
-        finding: String(parsed.finding ?? "").slice(0, 240),
-        signal: asSignal(parsed.signal),
-      },
-      sectionScore: clampScore(Number(parsed.section_score ?? 0)),
-    };
+  if (!parsed) {
+    throw new Error(`Credit analysis failed — the model returned no parseable result for ${filename}.`);
   }
-  return placeholderSection(documentType, filename);
-}
-
-/** Neutral placeholder when a section inference fails or returns nothing parseable. */
-export function placeholderSection(
-  documentType: string,
-  filename: string,
-): { docAnalysis: DocumentAnalysis; sectionScore: number } {
   return {
     docAnalysis: {
       filename,
-      documentType,
-      present: false,
-      authenticity: "medium",
-      consistency: "medium",
-      reliable: true,
-      finding: "This document could not be analyzed in time.",
-      signal: "neutral",
+      documentType: String(parsed.document_type ?? documentType).slice(0, 80),
+      present: parsed.present === undefined ? true : Boolean(parsed.present),
+      authenticity: asBand(parsed.authenticity),
+      consistency: asBand(parsed.consistency),
+      reliable: parsed.reliable === undefined ? true : Boolean(parsed.reliable),
+      finding: String(parsed.finding ?? "").slice(0, 240),
+      signal: asSignal(parsed.signal),
     },
-    sectionScore: 600,
+    sectionScore: clampScore(Number(parsed.section_score ?? 0)),
   };
 }
 
-/** Reduce the per-section analyses into the overall credit result. */
+/**
+ * Reduce the per-section analyses into the overall credit result.
+ * Throws if the reduce output is missing or unparseable — no synthetic fallback.
+ */
 export function parseReduceOutput(
   output: string | undefined,
   documentAnalysis: DocumentAnalysis[],
   avgSectionScore: number,
-  fallbackStrength: BorrowerStrength,
 ): ConfidentialAiResult {
   const parsed = tryExtractJson(output);
-  if (parsed) {
-    const score = clampScore(Number(parsed.creditworthiness_score ?? avgSectionScore));
-    return {
-      business_verified: Boolean(parsed.business_verified),
-      document_authenticity: asBand(parsed.document_authenticity),
-      fraud_risk: asBand(parsed.fraud_risk),
-      cashflow_strength: asBand(parsed.cashflow_strength),
-      debt_capacity: asBand(parsed.debt_capacity),
-      creditworthiness_score: score,
-      risk_tier: tierFromScore(score),
-      decision: decisionForScore(score),
-      document_analysis: documentAnalysis,
-      reasoning_summary: String(parsed.reasoning_summary ?? "").slice(0, 1000),
-      missing_information: Array.isArray(parsed.missing_information)
-        ? parsed.missing_information.map(String).slice(0, 12)
-        : [],
-    };
+  if (!parsed) {
+    throw new Error("Credit analysis failed — the model returned no parseable final decision. Please retry.");
   }
-  const fb = fallbackAiResult(fallbackStrength);
-  const score = clampScore(avgSectionScore || fb.creditworthiness_score);
+  const score = clampScore(Number(parsed.creditworthiness_score ?? avgSectionScore));
   return {
-    ...fb,
+    business_verified: Boolean(parsed.business_verified),
+    document_authenticity: asBand(parsed.document_authenticity),
+    fraud_risk: asBand(parsed.fraud_risk),
+    cashflow_strength: asBand(parsed.cashflow_strength),
+    debt_capacity: asBand(parsed.debt_capacity),
     creditworthiness_score: score,
     risk_tier: tierFromScore(score),
     decision: decisionForScore(score),
     document_analysis: documentAnalysis,
+    reasoning_summary: String(parsed.reasoning_summary ?? "").slice(0, 1000),
+    missing_information: Array.isArray(parsed.missing_information)
+      ? parsed.missing_information.map(String).slice(0, 12)
+      : [],
   };
 }
 
@@ -274,11 +101,9 @@ type ScoreResultArgs = {
   model: string;
   attested: boolean;
   ai: ConfidentialAiResult;
-  bureau: CreditBureauSignal;
   snapshot?: InferenceSnapshot;
   documentsBase64: string[];
   nowSeconds: number;
-  offchain?: OffchainProfileSignal;
   inferences?: InferenceRef[];
 };
 
@@ -288,16 +113,13 @@ export function buildScoreResult({
   model,
   attested,
   ai,
-  bureau,
   snapshot,
   documentsBase64,
   nowSeconds,
-  offchain,
   inferences,
 }: ScoreResultArgs): ScoreResult {
   const aiScore = clampScore(ai.creditworthiness_score);
-  const bureauScore = clampScore(bureau.bureauScore);
-  const combinedScore = combineScore(aiScore, bureauScore);
+  const combinedScore = aiScore;
   const riskTier = tierFromScore(combinedScore);
 
   const attestationHash = keccak256(stringToBytes(JSON.stringify({ inferenceId, model, output: ai })));
@@ -305,9 +127,7 @@ export function buildScoreResult({
 
   const scoreInputs: ScoreInputs = {
     confidentialAiScore: aiScore,
-    bureauScore,
     attestationHash,
-    bureauReportHash: bureau.rawReportHash,
     evidenceDigest,
     expiresAt: nowSeconds + CERTIFICATE_VALIDITY_SECONDS,
   };
@@ -317,15 +137,12 @@ export function buildScoreResult({
     model,
     attested,
     confidentialAi: ai,
-    bureau,
     combinedScore,
     riskTier,
     eligible: combinedScore >= MIN_ELIGIBLE_SCORE && riskTier !== "high_default_risk",
     minEligibleScore: MIN_ELIGIBLE_SCORE,
-    weights: { aiBps: AI_WEIGHT_BPS, bureauBps: BUREAU_WEIGHT_BPS },
     scoreInputs,
     usage: snapshot?.usage,
-    ...(offchain ? { offchain } : {}),
     ...(inferences && inferences.length ? { inferences } : {}),
   };
 }
@@ -343,23 +160,6 @@ function asBand(v: unknown): RiskBand {
 
 function asSignal(v: unknown): DocumentSignal {
   return v === "positive" || v === "neutral" || v === "negative" ? v : "neutral";
-}
-
-function parseDocumentAnalysis(v: unknown): DocumentAnalysis[] {
-  if (!Array.isArray(v)) return [];
-  return v.slice(0, 10).map(item => {
-    const o = (item ?? {}) as Record<string, unknown>;
-    return {
-      filename: String(o.filename ?? "document").slice(0, 120),
-      documentType: String(o.document_type ?? o.documentType ?? "Document").slice(0, 80),
-      present: o.present === undefined ? true : Boolean(o.present),
-      authenticity: asBand(o.authenticity),
-      consistency: asBand(o.consistency),
-      reliable: o.reliable === undefined ? true : Boolean(o.reliable),
-      finding: String(o.finding ?? "").slice(0, 240),
-      signal: asSignal(o.signal),
-    };
-  });
 }
 
 function tryExtractJson(text: string | undefined): Record<string, unknown> | null {

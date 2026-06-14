@@ -10,6 +10,7 @@ export * from "./useScaffoldReadContract";
 export * from "./useScaffoldWatchContractEvent";
 export * from "./useScaffoldWriteContract";
 export * from "./useSmartWallet";
+export * from "./useKreditoIdentity";
 export * from "./useTargetNetwork";
 export * from "./useTransactor";
 export * from "./useSelectedNetwork";

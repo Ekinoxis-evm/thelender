@@ -2,10 +2,11 @@
 
 Skill: `.claude/skills/privy/SKILL.md` · Live docs: **`privy-docs` MCP** (`https://docs.privy.io/mcp`).
 
-Privy is the **default wallet/auth** for this app (RainbowKit removed). It provides
-login (email / wallet / Google), **embedded wallets** auto-created on login, and
-**smart wallets** (ERC-4337) with **gas sponsorship** ("sponsored wallets") that is
-configured in the Privy Dashboard, not in code.
+Privy is the **default wallet/auth** for Kredito (RainbowKit + burner-connector removed). It provides
+login via **email + Google only** (no external wallet connectors), an **embedded wallet**
+auto-created on login, and an **ERC-4337 smart wallet** with **gas sponsorship** ("sponsored
+wallets") configured in the Privy Dashboard, not in code. Email/Google-only login plus the embedded
+→ smart-wallet path gives every Kredito user one consistent gasless UX with no wallet setup.
 
 > Always confirm current API shapes via the skill / `privy-docs` MCP — props change.
 
@@ -46,10 +47,10 @@ Confirmed against:
 ### Privy config (`services/web3/privyConfig.ts`)
 ```ts
 embeddedWallets: { ethereum: { createOnLogin: 'all-users' }, showWalletUIs: true }
-loginMethods: ['email', 'wallet', 'google']
-defaultChain:   targetNetworks[0]               // from scaffold.config
+loginMethods: ['email', 'google']               // email + Google ONLY — no external wallet connectors
+defaultChain:   targetNetworks[0]               // from scaffold.config (Sepolia)
 supportedChains: targetNetworks (+ mainnet for ENS)
-appearance:     { theme, accentColor: '#2299dd' } // theme overridden at runtime
+appearance:     { theme, accentColor: '#2299dd', showWalletLoginFirst: false } // theme overridden at runtime
 ```
 > In `@privy-io/react-auth` v3, `createOnLogin` lives under `embeddedWallets.ethereum`, not at the top level.
 
@@ -81,6 +82,12 @@ This repo wraps that in `useSponsoredWrite()`:
 - `sendCalls(calls)` — atomic sponsored batch.
 - `{ isPending, error, lastTxHash }` for UI state; throws a clear error if `client` isn't
   ready (not logged in / smart wallets not enabled in the dashboard).
+
+The same file also exports **`useSmartWalletSign()`** — `client.signMessage({ message })` on the
+smart wallet (ERC-191 → ERC-1271/6492 signature that `viem.verifyMessage` validates server-side, even
+before the account is deployed). It is **off-chain and free** (not a sponsored tx), and is how Kredito
+proves wallet control to backend routes — e.g. signing the `mintMessage` for the
+`<label>.kredito.eth` identity mint.
 
 **Reads** keep using SE-2's `useScaffoldReadContract`, but pass
 `{ account: useSmartWalletAddress() }` so balances/allowances reflect the **smart

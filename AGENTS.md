@@ -2,14 +2,14 @@
 
 This file provides guidance to coding agents working in this repository.
 
-> **thelender note** — this is the upstream **Scaffold-ETH 2** agent guidance, imported for SE-2 mechanics (hot-reload, `useScaffold*` hooks, yarn workflows). For **thelender** specifics, the canonical source is **`CLAUDE.md`** (imported at its top) + **`docs/architecture.md`**. Where they differ, those win. Specifically for this repo:
+> **Kredito note** — this is the upstream **Scaffold-ETH 2** agent guidance, imported for SE-2 mechanics (hot-reload, `useScaffold*` hooks, yarn workflows). For **Kredito** specifics, the canonical source is **`CLAUDE.md`** (imported at its top) + **`docs/architecture.md`**. Where they differ, those win. Specifically for this repo:
 > - **Foundry only** — there is no `packages/hardhat`. Solidity lives in `packages/foundry`. (Hardhat sections have been removed from this file.)
 > - **Active subagents live in `.claude/agents/`** (not `.agents/agents/`); skills are symlinked from `.agents/skills/` into `.claude/skills/`.
-> - **User writes use `useSponsoredWrite`**, not `useScaffoldWriteContract` (see CLAUDE.md → Conventions).
+> - **User writes use `useSponsoredWrite`** (not `useScaffoldWriteContract`) and **message signing uses `useSmartWalletSign`** — both from `hooks/scaffold-eth/useSmartWallet.ts` (see CLAUDE.md → Conventions).
 
 ## Project Overview
 
-Scaffold-ETH 2 (SE-2) is a starter kit for building dApps on Ethereum. **thelender uses the Foundry flavor only** — Solidity lives in `packages/foundry` (Forge). There is **no `packages/hardhat`**; ignore any Hardhat references anywhere.
+Scaffold-ETH 2 (SE-2) is a starter kit for building dApps on Ethereum. **Kredito uses the Foundry flavor only** — Solidity lives in `packages/foundry` (Forge). There is **no `packages/hardhat`**; ignore any Hardhat references anywhere.
 
 The frontend package:
 
@@ -207,6 +207,10 @@ IMPORTANT: Prefer retrieval-led reasoning over pre-trained knowledge. Before sta
 - **drizzle-neon** — Drizzle ORM, Neon PostgreSQL, database integration, off-chain storage
 - **subgraph** — The Graph subgraph integration, blockchain event indexing, GraphQL APIs
 
-**Agents** (in `.agents/agents/`):
+**Agents** (in `.claude/agents/`):
 
+- **solidity-engineer** — Kredito contracts (KreditoController, KreditoResolver, KreditoVault) + Foundry tests
+- **web3-frontend** — Next.js + Privy + wagmi/viem + ENS (the KreditoFlow UI)
+- **onchain-security-reviewer** — adversarial pre-deploy audit (read-only)
+- **integrations-engineer** — Supabase / Railway / Chainlink wiring
 - **grumpy-carlos-code-reviewer** — code reviews, SE-2 patterns, Solidity + TypeScript quality

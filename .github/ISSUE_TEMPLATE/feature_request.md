@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Propose a new capability for thelender
+about: Propose a new capability for Kredito
 title: "feat: "
 labels: enhancement
 ---
