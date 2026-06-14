@@ -617,7 +617,7 @@ const ScoreSection = ({
               <code className="k-mono text-sm break-all flex-1">{result.inferenceId}</code>
               {!result.inferenceId.startsWith("mock") && (
                 <a
-                  href={`/api/lendsignal/inference/${result.inferenceId}`}
+                  href={`/inference/${result.inferenceId}`}
                   target="_blank"
                   rel="noreferrer"
                   className="btn btn-ghost btn-xs gap-1 shrink-0"
@@ -688,7 +688,7 @@ const ScoreSection = ({
                   <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
                   {real ? (
                     <a
-                      href={`/api/lendsignal/inference/${q.inferenceId}`}
+                      href={`/inference/${q.inferenceId}`}
                       target="_blank"
                       rel="noreferrer"
                       className="link k-mono text-xs truncate flex-1 inline-flex items-center gap-1"
