@@ -4,7 +4,7 @@
  * synthetic fallback: if a section/reduce inference fails or returns unparseable
  * output, parsing THROWS a clear Error and the caller surfaces it to the user.
  *
- *   >=750 Low · 600..749 Medium · <600 High   ·   eligible = >=600 && tier!=High
+ *   >=750 Low · 400..749 Medium · <400 High   ·   eligible = >=400 (== approved: gets subdomain + funding)
  */
 import type { InferenceSnapshot } from "./confidentialAi";
 import type {
@@ -20,20 +20,23 @@ import type {
 } from "./types";
 import { keccak256, stringToBytes } from "viem";
 
-export const MIN_ELIGIBLE_SCORE = 600;
+export const MIN_ELIGIBLE_SCORE = 400;
 export const CERTIFICATE_VALIDITY_SECONDS = 90 * 24 * 60 * 60; // 90 days
 
 const clampScore = (n: number) => Math.max(0, Math.min(1000, Math.round(n)));
 
+// Tiers: >=750 low · 400..749 medium · <400 high. The high boundary == MIN_ELIGIBLE_SCORE so that
+// "eligible = score >= MIN && tier != high" is simply "score >= 400" — an approved business gets the
+// subdomain + profile + the right to request funding.
 export function tierFromScore(score: number): RiskTier {
   if (score >= 750) return "low_default_risk";
-  if (score >= 600) return "medium_default_risk";
+  if (score >= MIN_ELIGIBLE_SCORE) return "medium_default_risk";
   return "high_default_risk";
 }
 
 export function decisionForScore(score: number): CreditDecision {
   if (score >= 750) return "approved";
-  if (score >= 600) return "manual_review";
+  if (score >= MIN_ELIGIBLE_SCORE) return "manual_review";
   return "denied";
 }
 

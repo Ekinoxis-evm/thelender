@@ -27,7 +27,7 @@ export async function getDecision(wallet: string): Promise<CreditDecision | null
   const db = createAdminClient();
   const { data } = await db
     .from("credit_checks")
-    .select("borrower, combined_score, risk_tier, attestation_hash")
+    .select("borrower, combined_score, attestation_hash")
     .ilike("borrower", wallet)
     .order("created_at", { ascending: false })
     .limit(1)
@@ -36,10 +36,11 @@ export async function getDecision(wallet: string): Promise<CreditDecision | null
   const row = data as {
     borrower: string;
     combined_score: number | null;
-    risk_tier: string | null;
     attestation_hash: string | null;
   };
-  const approved = (row.combined_score ?? 0) >= MIN_ELIGIBLE_SCORE && row.risk_tier !== "high_default_risk";
+  // Recompute approval from the score alone against the current MIN_ELIGIBLE_SCORE (the high-risk
+  // boundary == MIN, so score >= MIN is the whole gate). Ignores any stale stored tier/eligible flag.
+  const approved = (row.combined_score ?? 0) >= MIN_ELIGIBLE_SCORE;
   return {
     wallet_address: row.borrower,
     status: approved ? "approved" : "denied",

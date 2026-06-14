@@ -79,7 +79,7 @@ export const Landing = ({ onConnect }: { onConnect?: () => void }) => {
               </div>
               <div className="mt-2 flex justify-between k-mono text-[11px] text-white/35">
                 <span>0</span>
-                <span className="text-accent">600 min</span>
+                <span className="text-accent">400 min</span>
                 <span>1000</span>
               </div>
 
@@ -105,7 +105,7 @@ export const Landing = ({ onConnect }: { onConnect?: () => void }) => {
             { label: "Score model", value: "Confidential AI" },
             { label: "Runs in", value: "Chainlink TEE" },
             { label: "Score range", value: "0–1000" },
-            { label: "Min eligible score", value: "600" },
+            { label: "Min eligible score", value: "400" },
           ].map(s => (
             <div key={s.label}>
               <p className="k-eyebrow mb-1">{s.label}</p>

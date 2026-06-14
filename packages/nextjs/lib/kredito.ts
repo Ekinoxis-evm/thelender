@@ -39,14 +39,14 @@ export const fullName = (label: string) => `${label}.${KREDITO_PARENT_NAME}`;
 /**
  * Derive the borrow credit limit (USD) from the combined credit score — there is no user-entered
  * loan amount. Used to set the attestation's `maxPrincipal`. Rounded to the nearest $500.
- *   score >= 750 (low risk):  $10,000 → $50,000 across 750..1000
- *   600..749 (medium risk):   ~$2,000 → ~$10,000 across 600..749
- *   < 600 (high risk):        $0 (not eligible)
+ *   score >= 750 (low risk):   $10,000 → $50,000 across 750..1000
+ *   400..749 (medium risk):    ~$1,000 → ~$10,000 across 400..749 (eligible to request funding)
+ *   < 400 (high risk):         $0 (not eligible)
  */
 export function creditLimitUsd(score: number): number {
   let usd = 0;
   if (score >= 750) usd = 10_000 + ((Math.min(score, 1000) - 750) / 250) * 40_000;
-  else if (score >= 600) usd = 2_000 + ((score - 600) / 150) * 8_000;
+  else if (score >= 400) usd = 1_000 + ((score - 400) / 350) * 9_000;
   return Math.round(usd / 500) * 500;
 }
 
