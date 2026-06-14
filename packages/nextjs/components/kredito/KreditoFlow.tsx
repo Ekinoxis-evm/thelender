@@ -22,7 +22,6 @@ import { RecentChecks } from "~~/components/kredito/RecentChecks";
 import { useSmartWalletSign, useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
 import { toTypedMessage, typedData } from "~~/kredito/attestation";
 import { formatUsd } from "~~/kredito/format";
-import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
 import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
 import { useKreditoWallet } from "~~/kredito/useWallet";
 import {
@@ -34,11 +33,28 @@ import {
   type VaultLoan,
   sepoliaTxUrl,
 } from "~~/kredito/vault";
-import { fullName, mintMessage, normalizeLabel } from "~~/lib/kredito";
+import { COUNTRIES, ENTERPRISE_TYPES } from "~~/lib/countries";
+import {
+  type EnsIdentity,
+  PROFILE_FIELDS,
+  type ProfileCol,
+  creditLimitUsd,
+  editMessage,
+  ensTextRecords,
+  fullName,
+  kreditoResolverAbi,
+  labelToNode,
+  mintMessage,
+  normalizeLabel,
+  profileDigest,
+  sanitizeProfile,
+} from "~~/lib/kredito";
 import type { UploadedDocument } from "~~/services/lendsignal/types";
 import { getParsedError, notification } from "~~/utils/scaffold-eth";
 
-const STEPS = ["Onboarding", "Score", "Certificate", "Borrow", "Liquidity"] as const;
+const STEPS = ["Onboarding", "Score", "Certificate", "Profile", "Borrow", "Liquidity"] as const;
+
+const KREDITO_RESOLVER = (process.env.NEXT_PUBLIC_KREDITO_RESOLVER ?? "") as string;
 
 // Each required document gets its own upload slot so the user submits them one by one.
 const REQUIRED_DOCS = [
@@ -52,6 +68,23 @@ const REQUIRED_DOCS = [
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const ZERO_ADDR = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+
+// The onboarding form starts empty — the user enters their own business identity details.
+type FormProfile = {
+  legalName: string;
+  country: string;
+  enterpriseType: string;
+  taxNumber: string;
+  registryNumber: string;
+};
+
+const EMPTY_PROFILE: FormProfile = {
+  legalName: "",
+  country: "",
+  enterpriseType: "",
+  taxNumber: "",
+  registryNumber: "",
+};
 
 const SIGNAL_BADGE: Record<string, string> = {
   positive: "badge-success",
@@ -141,6 +174,38 @@ const Field = ({
   </label>
 );
 
+const SelectField = ({
+  label,
+  value,
+  onChange,
+  options,
+  placeholder,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  options: readonly string[];
+  placeholder: string;
+}) => (
+  <label className="block">
+    <span className="k-eyebrow">{label}</span>
+    <select
+      value={value}
+      onChange={e => onChange(e.target.value)}
+      className="select select-bordered mt-1 w-full text-sm font-normal"
+    >
+      <option value="" disabled>
+        {placeholder}
+      </option>
+      {options.map(o => (
+        <option key={o} value={o}>
+          {o}
+        </option>
+      ))}
+    </select>
+  </label>
+);
+
 const DocSlot = ({
   label,
   hint,
@@ -183,20 +248,6 @@ const DocSlot = ({
     )}
   </div>
 );
-
-const SLOT_KEYS = REQUIRED_DOCS.map(d => d.key) as readonly string[];
-
-/** Map a filename to one of the evidence slots (mirrors the server's detectSection). */
-const detectSlot = (filename: string): string | null => {
-  const f = filename.toLowerCase();
-  if (/(income|financ|p&l|profit|balance|cash.?flow)/.test(f)) return "financials";
-  if (/tax/.test(f)) return "tax";
-  if (/bank|statement/.test(f)) return "bank";
-  if (/(a\/?r|receivable|aging)/.test(f)) return "ar";
-  if (/debt|loan|liab/.test(f)) return "debt";
-  if (/legal|article|license|formation|incorp|ein/.test(f)) return "legal";
-  return null;
-};
 
 /** Animated multi-step loader shown while the map→reduce pipeline runs. */
 const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
@@ -274,15 +325,15 @@ export const KreditoFlow = () => {
   const [step, setStep] = useState(0);
   const [maxStep, setMaxStep] = useState(0);
 
-  const [profile, setProfile] = useState(DEMO_PROFILE);
-  const [archetype, setArchetype] = useState<string>("strong");
+  const [profile, setProfile] = useState<FormProfile>(EMPTY_PROFILE);
   const [docs, setDocs] = useState<Record<string, UploadedDocument | null>>({});
   const [submitting, setSubmitting] = useState(false);
   const [analyzingSteps, setAnalyzingSteps] = useState<string[]>([]);
-  const [loadedCase, setLoadedCase] = useState<"success" | "risk" | null>(null);
   const [result, setResult] = useState<StoredScore | null>(null);
   // The issuer-signed attestation, produced in the Certificate step and consumed by Borrow.
   const [att, setAtt] = useState<SignedAttestation | null>(null);
+  // The minted identity label, lifted from CertificateSection so the Profile step can resolve it.
+  const [mintedLabel, setMintedLabel] = useState<string | null>(null);
 
   const set = (k: keyof typeof profile) => (v: string) => setProfile(p => ({ ...p, [k]: v }));
   const uploadedDocs = Object.values(docs).filter(Boolean) as UploadedDocument[];
@@ -311,69 +362,37 @@ export const KreditoFlow = () => {
     }
   };
 
-  // Load a use-case document set (success | risk) from public/docs/<case> into the slots.
-  const loadSamples = async (caseId: "success" | "risk" = "success", silent = false) => {
-    try {
-      const res = await fetch(`/api/lendsignal/sample-docs?case=${caseId}`);
-      const json = await res.json();
-      const sample: UploadedDocument[] = json.documents ?? [];
-      if (!sample.length) {
-        if (!silent) notification.error(`No documents found for the ${caseId} case.`);
-        return;
-      }
-      const next: Record<string, UploadedDocument | null> = {};
-      const taken = new Set<string>();
-      for (const d of sample) {
-        let key = detectSlot(d.filename);
-        if (!key || taken.has(key)) key = SLOT_KEYS.find(k => !taken.has(k)) ?? null;
-        if (key) {
-          next[key] = d;
-          taken.add(key);
-        }
-      }
-      setDocs(next);
-      setLoadedCase(caseId);
-      if (!silent) notification.success(`Loaded the ${caseId} case (${sample.length} docs)`);
-    } catch {
-      if (!silent) notification.error("Could not load documents.");
-    }
-  };
-
-  // Preload the success case once so the full happy-path exercise is ready to run.
-  useEffect(() => {
-    void loadSamples("success", true);
-  }, []);
-
   const runCreditCheck = async () => {
+    if (
+      !profile.legalName.trim() ||
+      !profile.country.trim() ||
+      !profile.enterpriseType.trim() ||
+      !profile.taxNumber.trim() ||
+      !profile.registryNumber.trim()
+    ) {
+      notification.error("Complete all business fields: legal name, country, type, tax number, registry number.");
+      return;
+    }
+    if (uploadedDocs.length === 0) {
+      notification.error("Upload at least one business document to run the credit check.");
+      return;
+    }
     setSubmitting(true);
-    const steps =
-      uploadedDocs.length > 0
-        ? uploadedDocs.map(d => `Analyze ${d.filename}`)
-        : REQUIRED_DOCS.map(d => `Analyze ${d.label}`);
-    steps.push("Reduce to a final decision", "Off-chain profile analysis");
+    const steps = uploadedDocs.map(d => `Analyze ${d.filename}`);
+    steps.push("Reduce to a final decision");
     setAnalyzingSteps(steps);
     try {
       const apiProfile = {
         legalName: profile.legalName,
         country: profile.country,
-        industry: profile.industry,
-        requestedLoanUsd: profile.requestedLoanUsd,
-        ensName: profile.ensName || undefined,
+        enterpriseType: profile.enterpriseType,
+        taxNumber: profile.taxNumber,
+        registryNumber: profile.registryNumber,
       };
-      // Uploaded documents take the real path; otherwise the chosen demo archetype.
-      const base = { profile: apiProfile, borrower: address };
-      // The loaded case tunes the (mock) bureau + off-chain signal to match it; the
-      // document-based AI score stays real (no clamp on uploads).
-      const strengthHint = loadedCase === "risk" ? "weak" : loadedCase === "success" ? "strong" : undefined;
-      const body =
-        uploadedDocs.length > 0
-          ? { ...base, documents: uploadedDocs, ...(strengthHint ? { strength: strengthHint } : {}) }
-          : { ...base, demoProfileId: archetype };
-
       const res = await fetch("/api/lendsignal/score", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
+        body: JSON.stringify({ profile: apiProfile, borrower: address, documents: uploadedDocs }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.message || json?.error || "Scoring failed");
@@ -408,19 +427,22 @@ export const KreditoFlow = () => {
               <Panel eyebrow="Business profile" title="Company information">
                 <div className="grid sm:grid-cols-2 gap-4">
                   <Field label="Legal name" value={profile.legalName} onChange={set("legalName")} />
-                  <Field label="Country / market" value={profile.country} onChange={set("country")} />
-                  <Field label="Industry" value={profile.industry} onChange={set("industry")} />
-                  <Field label="ENS name" value={profile.ensName ?? ""} onChange={set("ensName")} suffix=".eth" />
-                  <Field
-                    label="Monthly revenue (USD)"
-                    value={String(profile.monthlyRevenueUsd)}
-                    onChange={v => setProfile(p => ({ ...p, monthlyRevenueUsd: Number(v) || 0 }))}
+                  <SelectField
+                    label="Country"
+                    value={profile.country}
+                    onChange={set("country")}
+                    options={COUNTRIES}
+                    placeholder="Select a country"
                   />
-                  <Field
-                    label="Requested loan (USD)"
-                    value={String(profile.requestedLoanUsd)}
-                    onChange={v => setProfile(p => ({ ...p, requestedLoanUsd: Number(v) || 0 }))}
+                  <SelectField
+                    label="Type of enterprise"
+                    value={profile.enterpriseType}
+                    onChange={set("enterpriseType")}
+                    options={ENTERPRISE_TYPES}
+                    placeholder="Select a type"
                   />
+                  <Field label="Tax number" value={profile.taxNumber} onChange={set("taxNumber")} />
+                  <Field label="Registry number" value={profile.registryNumber} onChange={set("registryNumber")} />
                 </div>
               </Panel>
 
@@ -428,25 +450,9 @@ export const KreditoFlow = () => {
                 eyebrow="Evidence"
                 title="Upload documents"
                 action={
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => loadSamples("success")}
-                      className={`btn btn-xs ${loadedCase === "success" ? "btn-primary" : "btn-ghost"}`}
-                    >
-                      Success case
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => loadSamples("risk")}
-                      className={`btn btn-xs ${loadedCase === "risk" ? "btn-primary" : "btn-ghost"}`}
-                    >
-                      Risk case
-                    </button>
-                    <span className="k-mono text-xs text-base-content/55 ml-1">
-                      {uploadedDocs.length}/{REQUIRED_DOCS.length}
-                    </span>
-                  </div>
+                  <span className="k-mono text-xs text-base-content/55">
+                    {uploadedDocs.length}/{REQUIRED_DOCS.length}
+                  </span>
                 }
               >
                 <div className="grid sm:grid-cols-2 gap-2.5">
@@ -462,40 +468,14 @@ export const KreditoFlow = () => {
                   ))}
                 </div>
                 <p className="mt-3 text-xs text-base-content/55">
-                  Prefer small <code>.txt</code>/<code>.png</code> files (fast TEE preprocessing). No uploads? The
-                  selected demo borrower attaches representative documents. Raw files never leave the enclave or go
-                  onchain.
+                  Upload your own business documents. Prefer small <code>.txt</code>/<code>.png</code>/<code>.pdf</code>{" "}
+                  files (faster TEE preprocessing). Raw files never leave the enclave or go onchain — only the attested
+                  score does.
                 </p>
               </Panel>
             </div>
 
             <div className="space-y-5">
-              <Panel eyebrow="Demo" title="Borrower profile">
-                <div className="space-y-2">
-                  {DEMO_BORROWERS.map(b => (
-                    <button
-                      key={b.key}
-                      type="button"
-                      onClick={() => setArchetype(b.key)}
-                      disabled={uploadedDocs.length > 0}
-                      className={`w-full text-left rounded-field border px-3 py-2.5 transition-colors disabled:opacity-40 ${
-                        archetype === b.key && uploadedDocs.length === 0
-                          ? "border-primary bg-primary/5"
-                          : "border-base-300 hover:bg-base-200"
-                      }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span className="font-medium text-sm">{b.label}</span>
-                        <span className="k-mono text-xs text-base-content/50">
-                          {b.ai}/{b.bureau}
-                        </span>
-                      </div>
-                      <p className="text-xs text-base-content/55 mt-0.5">{b.blurb}</p>
-                    </button>
-                  ))}
-                </div>
-              </Panel>
-
               <Panel eyebrow="Wallet" title="Credit identity">
                 {address ? (
                   <div className="space-y-2.5">
@@ -538,27 +518,38 @@ export const KreditoFlow = () => {
         <CertificateSection
           result={result}
           borrower={(address ?? ZERO_ADDR) as `0x${string}`}
-          ensName={profile.ensName ?? ""}
+          legalName={profile.legalName}
           att={att}
           setAtt={setAtt}
+          onMinted={setMintedLabel}
           onBack={() => setStep(1)}
           onNext={() => advance(3)}
         />
       )}
 
-      {/* STEP 4 — BORROW (onchain) */}
+      {/* STEP 4 — PROFILE (public credit identity setup) */}
       {step === 3 && (
-        <BorrowSection
-          result={result}
+        <ProfileSection
           borrower={(address ?? ZERO_ADDR) as `0x${string}`}
-          att={att}
+          mintedLabel={mintedLabel}
           onBack={() => setStep(2)}
           onNext={() => advance(4)}
         />
       )}
 
-      {/* STEP 5 — LIQUIDITY (ERC-4626 + ERC-7540 async redeem) */}
-      {step === 4 && <LiquiditySection borrower={(address ?? ZERO_ADDR) as `0x${string}`} onBack={() => setStep(3)} />}
+      {/* STEP 5 — BORROW (onchain) */}
+      {step === 4 && (
+        <BorrowSection
+          result={result}
+          borrower={(address ?? ZERO_ADDR) as `0x${string}`}
+          att={att}
+          onBack={() => setStep(3)}
+          onNext={() => advance(5)}
+        />
+      )}
+
+      {/* STEP 6 — LIQUIDITY (ERC-4626 + ERC-7540 async redeem) */}
+      {step === 5 && <LiquiditySection borrower={(address ?? ZERO_ADDR) as `0x${string}`} onBack={() => setStep(4)} />}
     </div>
   );
 };
@@ -575,7 +566,6 @@ const ScoreSection = ({
   onIssue: () => void;
 }) => {
   const ai = result.scoreInputs.confidentialAiScore;
-  const bureau = result.scoreInputs.bureauScore;
   const tokens = result.usage ? result.usage.prompt_tokens + result.usage.completion_tokens : undefined;
   const copyId = () => {
     navigator.clipboard?.writeText(result.inferenceId);
@@ -586,22 +576,20 @@ const ScoreSection = ({
       <PageHeader
         step={2}
         eyebrow="Creditworthiness score"
-        title="Two signals, one score"
-        subtitle="A Chainlink Confidential AI attestation and a CRS credit-bureau signal blended into a single 0–1000 score."
+        title="Confidential AI credit score"
+        subtitle="Your documents are analyzed inside a Chainlink TEE; the attested result is your 0–1000 credit score."
       />
       <div className="grid lg:grid-cols-3 gap-5">
         <Panel
           eyebrow="Result"
-          title="Combined score"
+          title="Credit score"
           className="lg:col-span-2"
           action={
             result.attested ? (
               <span className="badge badge-success gap-1">
                 <ShieldCheckIcon className="h-3.5 w-3.5" /> Attested (TEE)
               </span>
-            ) : (
-              <span className="badge badge-ghost">mock</span>
-            )
+            ) : null
           }
         >
           <ScoreMeter score={result.combinedScore} />
@@ -610,19 +598,9 @@ const ScoreSection = ({
               name="Confidential AI Attester"
               source="Chainlink · runs in a TEE"
               score={ai}
-              weightBps={7000}
+              weightBps={10000}
               accent="bg-primary"
             />
-            <SignalRow
-              name="Credit-risk bureau"
-              source="CRS · business credit history"
-              score={bureau}
-              weightBps={3000}
-              accent="bg-accent"
-            />
-          </div>
-          <div className="mt-6 rounded-field bg-base-200 px-4 py-3 k-mono text-sm">
-            combinedScore = {ai}·70% + {bureau}·30% = <span className="font-semibold">{result.combinedScore}</span>
           </div>
           {result.confidentialAi.reasoning_summary && (
             <div className="mt-4">
@@ -636,24 +614,18 @@ const ScoreSection = ({
               <p className="k-eyebrow flex items-center gap-1.5">
                 <ShieldCheckIcon className="h-4 w-4 text-primary" /> Chainlink request ID
               </p>
-              {result.attested ? (
-                <span className="badge badge-success badge-sm">attested · TEE</span>
-              ) : (
-                <span className="badge badge-ghost badge-sm">mock</span>
-              )}
+              <span className="badge badge-success badge-sm">attested · TEE</span>
             </div>
             <div className="mt-1.5 flex items-center gap-2">
               <code className="k-mono text-sm break-all flex-1">{result.inferenceId}</code>
-              {!result.inferenceId.startsWith("mock") && (
-                <a
-                  href={`/inference/${result.inferenceId}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="btn btn-ghost btn-xs gap-1 shrink-0"
-                >
-                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> View
-                </a>
-              )}
+              <a
+                href={`/inference/${result.inferenceId}`}
+                target="_blank"
+                rel="noreferrer"
+                className="btn btn-ghost btn-xs gap-1 shrink-0"
+              >
+                <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> View
+              </a>
               <button type="button" onClick={copyId} className="btn btn-ghost btn-xs gap-1 shrink-0">
                 <DocumentDuplicateIcon className="h-3.5 w-3.5" /> Copy
               </button>
@@ -677,8 +649,8 @@ const ScoreSection = ({
             action={<span className="badge badge-ghost badge-sm">not issued yet</span>}
           >
             <p className="text-xs text-base-content/55 mb-3">
-              These three digests (the certificate&apos;s <code>ScoreInputs</code>) are written onchain when you issue
-              the certificate. Raw evidence stays offchain.
+              These digests (the certificate&apos;s <code>ScoreInputs</code>) are written onchain when you issue the
+              certificate. Raw evidence stays offchain.
             </p>
             <div className="space-y-2.5">
               <div>
@@ -686,25 +658,19 @@ const ScoreSection = ({
                 <HashChip value={result.scoreInputs.attestationHash} />
               </div>
               <div>
-                <p className="k-eyebrow mb-1">Bureau report</p>
-                <HashChip value={result.scoreInputs.bureauReportHash} />
-              </div>
-              <div>
                 <p className="k-eyebrow mb-1">Evidence digest</p>
                 <HashChip value={result.scoreInputs.evidenceDigest} />
               </div>
             </div>
-            {!result.inferenceId.startsWith("mock") && (
-              <a
-                href={`/inference/${result.inferenceId}`}
-                target="_blank"
-                rel="noreferrer"
-                className="link text-xs inline-flex items-center gap-1 mt-3"
-              >
-                Verify the Chainlink attestation
-                <ArrowTopRightOnSquareIcon className="h-3 w-3" />
-              </a>
-            )}
+            <a
+              href={`/inference/${result.inferenceId}`}
+              target="_blank"
+              rel="noreferrer"
+              className="link text-xs inline-flex items-center gap-1 mt-3"
+            >
+              Verify the Chainlink attestation
+              <ArrowTopRightOnSquareIcon className="h-3 w-3" />
+            </a>
           </Panel>
           <Panel
             eyebrow="Policy"
@@ -722,37 +688,30 @@ const ScoreSection = ({
         </div>
       </div>
 
-      {/* All Confidential AI queries that ran (per-section + reduce + off-chain) */}
+      {/* All Confidential AI queries that ran (per-section + reduce) */}
       {result.inferences && result.inferences.length > 0 && (
         <Panel eyebrow={`${result.inferences.length} queries`} title="Confidential AI requests" className="mt-5">
           <div className="divide-y divide-base-300">
-            {result.inferences.map(q => {
-              const real = !q.inferenceId.startsWith("mock");
-              return (
-                <div key={q.inferenceId} className="flex items-center gap-3 py-2 text-sm">
-                  <span className={`badge badge-sm shrink-0 ${q.attested ? "badge-success" : "badge-ghost"}`}>
-                    {q.attested ? "TEE" : "mock"}
-                  </span>
-                  <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
-                  {real ? (
-                    <a
-                      href={`/inference/${q.inferenceId}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="link k-mono text-xs truncate flex-1 inline-flex items-center gap-1"
-                    >
-                      {q.inferenceId}
-                      <ArrowTopRightOnSquareIcon className="h-3 w-3 shrink-0" />
-                    </a>
-                  ) : (
-                    <code className="k-mono text-xs text-base-content/55 truncate flex-1">{q.inferenceId}</code>
-                  )}
-                </div>
-              );
-            })}
+            {result.inferences.map(q => (
+              <div key={q.inferenceId} className="flex items-center gap-3 py-2 text-sm">
+                <span className={`badge badge-sm shrink-0 ${q.attested ? "badge-success" : "badge-ghost"}`}>
+                  {q.attested ? "TEE" : "—"}
+                </span>
+                <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
+                <a
+                  href={`/inference/${q.inferenceId}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="link k-mono text-xs truncate flex-1 inline-flex items-center gap-1"
+                >
+                  {q.inferenceId}
+                  <ArrowTopRightOnSquareIcon className="h-3 w-3 shrink-0" />
+                </a>
+              </div>
+            ))}
           </div>
           <p className="mt-3 text-xs text-base-content/50">
-            One attested request per document, one for the final decision, plus the off-chain profile query.
+            One attested request per document, plus one for the final decision.
           </p>
         </Panel>
       )}
@@ -801,46 +760,6 @@ const ScoreSection = ({
         </Panel>
       )}
 
-      {/* Second query — off-chain profile/industry analysis (no documents) */}
-      {result.offchain && (
-        <Panel
-          eyebrow="Second query · off-chain"
-          title="Profile & industry analysis"
-          className="mt-5"
-          action={
-            result.offchain.attested ? (
-              <span className="badge badge-info badge-sm">off-chain · TEE</span>
-            ) : (
-              <span className="badge badge-ghost badge-sm">mock</span>
-            )
-          }
-        >
-          <div className="grid sm:grid-cols-3 gap-4 mb-3">
-            <div>
-              <p className="k-eyebrow mb-1">Profile score</p>
-              <p className="k-mono text-2xl font-semibold">{result.offchain.profileScore}</p>
-            </div>
-            <div>
-              <p className="k-eyebrow mb-1">Industry risk</p>
-              <span className={`badge ${BAND_BADGE[result.offchain.industryRisk]}`}>
-                {result.offchain.industryRisk}
-              </span>
-            </div>
-            <div>
-              <p className="k-eyebrow mb-1">Request ID</p>
-              <code className="k-mono text-xs break-all">{result.offchain.inferenceId}</code>
-            </div>
-          </div>
-          {result.offchain.summary && <p className="text-sm text-base-content/70">{result.offchain.summary}</p>}
-          {result.offchain.marketView && (
-            <p className="text-xs text-base-content/55 mt-1">{result.offchain.marketView}</p>
-          )}
-          <p className="text-xs text-base-content/45 mt-2">
-            Complementary signal from the public profile only — not part of the onchain score.
-          </p>
-        </Panel>
-      )}
-
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
           <ArrowLeftIcon className="h-4 w-4" /> Back
@@ -867,17 +786,19 @@ const safeLabel = (ensName: string): string => {
 const CertificateSection = ({
   result,
   borrower,
-  ensName,
+  legalName,
   att,
   setAtt,
+  onMinted,
   onBack,
   onNext,
 }: {
   result: StoredScore;
   borrower: `0x${string}`;
-  ensName: string;
+  legalName: string;
   att: SignedAttestation | null;
   setAtt: (a: SignedAttestation | null) => void;
+  onMinted: (label: string) => void;
   onBack: () => void;
   onNext: () => void;
 }) => {
@@ -905,7 +826,7 @@ const CertificateSection = ({
   }, [att]);
 
   const signMessage = useSmartWalletSign();
-  const [label, setLabel] = useState(() => safeLabel(ensName));
+  const [label, setLabel] = useState(() => safeLabel(legalName));
   const [minting, setMinting] = useState(false);
   const [minted, setMinted] = useState<{ label: string; txHash: `0x${string}` } | null>(null);
 
@@ -931,6 +852,7 @@ const CertificateSection = ({
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error || json?.message || "Mint failed");
       setMinted({ label: normalized, txHash: json.txHash });
+      onMinted(normalized);
       notification.success(`Minted ${fullName(normalized)}`);
     } catch (e) {
       notification.error(e instanceof Error ? e.message : "Mint failed");
@@ -941,6 +863,12 @@ const CertificateSection = ({
 
   // Option B: the issuer SIGNS an EIP-712 attestation; the vault verifies it onchain.
   const signAttestation = async () => {
+    // No user-entered loan amount — the credit limit (maxPrincipal) is derived from the score.
+    const limitUsd = creditLimitUsd(result.combinedScore);
+    if (limitUsd <= 0) {
+      notification.error("Your credit score is below the eligible threshold for a credit line.");
+      return;
+    }
     setSigning(true);
     try {
       const res = await fetch("/api/lendsignal/attest", {
@@ -952,11 +880,10 @@ const CertificateSection = ({
           riskTier: result.riskTier,
           evidenceDigest: result.scoreInputs.evidenceDigest,
           expiresAt: result.scoreInputs.expiresAt,
-          // H-2: issuer-bound loan cap. Demo asset is 6-decimal mUSDC where 1 unit == $1, so the
-          // recommended USD credit limit maps directly to base units. The vault enforces amount <= this.
-          maxPrincipal: (
-            BigInt(Math.max(0, Math.round(result.bureau.recommendedCreditLimitUsd))) * 1_000_000n
-          ).toString(),
+          // H-2: issuer-bound loan cap = the borrower's requested loan amount. The demo asset is
+          // 6-decimal mUSDC where 1 unit == $1, so USD maps directly to base units. The vault
+          // enforces borrow amount <= this.
+          maxPrincipal: (BigInt(limitUsd) * 1_000_000n).toString(),
         }),
       });
       const json = await res.json();
@@ -1131,8 +1058,8 @@ const CertificateSection = ({
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
           <ArrowLeftIcon className="h-4 w-4" /> Back
         </button>
-        <button className="btn btn-primary gap-1" onClick={onNext} type="button">
-          Continue to borrow <ArrowRightIcon className="h-4 w-4" />
+        <button className="btn btn-primary gap-1" onClick={onNext} type="button" disabled={!minted}>
+          Set up profile <ArrowRightIcon className="h-4 w-4" />
         </button>
       </div>
     </>
@@ -1145,6 +1072,281 @@ const Stat = ({ label, value }: { label: string; value: string }) => (
     <p className="k-mono text-2xl font-semibold">{value}</p>
   </div>
 );
+
+const blockscoutAddressUrl = (addr: string) => `https://eth-sepolia.blockscout.com/address/${addr}`;
+
+const ProfileSection = ({
+  borrower,
+  mintedLabel,
+  onBack,
+  onNext,
+}: {
+  borrower: `0x${string}`;
+  mintedLabel: string | null;
+  onBack: () => void;
+  onNext: () => void;
+}) => {
+  const signMessage = useSmartWalletSign();
+  const { writeContractSponsored } = useSponsoredWrite();
+  const resolverConfigured = KREDITO_RESOLVER.length > 0;
+
+  const [identity, setIdentity] = useState<EnsIdentity | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [label, setLabel] = useState<string | null>(mintedLabel);
+  const [form, setForm] = useState<Record<ProfileCol, string>>(
+    () => Object.fromEntries(PROFILE_FIELDS.map(f => [f.col, ""])) as Record<ProfileCol, string>,
+  );
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  const setField = (col: ProfileCol, v: string) => setForm(p => ({ ...p, [col]: v }));
+
+  // Resolve the minted identity: prefer the lifted label; otherwise look it up by wallet.
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        let id: EnsIdentity | null = null;
+        if (mintedLabel) {
+          const r = await fetch(`/api/identity/${encodeURIComponent(mintedLabel)}`);
+          if (r.ok) id = (await r.json()).identity as EnsIdentity;
+        }
+        if (!id && borrower !== ZERO_ADDR) {
+          const r = await fetch(`/api/identity/lookup?wallet=${borrower}`);
+          if (r.ok) {
+            const j = await r.json();
+            if (j?.hasIdentity && j.identity) id = j.identity as EnsIdentity;
+          }
+        }
+        if (cancelled) return;
+        setIdentity(id);
+        if (id) {
+          setLabel(id.label);
+          setForm(
+            Object.fromEntries(PROFILE_FIELDS.map(f => [f.col, (id[f.col] as string | null) ?? ""])) as Record<
+              ProfileCol,
+              string
+            >,
+          );
+        }
+      } catch {
+        // Non-fatal — the form still renders empty so the user can fill it in.
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    void load();
+    return () => {
+      cancelled = true;
+    };
+  }, [mintedLabel, borrower]);
+
+  const save = async () => {
+    if (!label) {
+      notification.error("No minted identity found. Mint your kredito.eth name first.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const clean = sanitizeProfile(form);
+      const node = labelToNode(label);
+      const { keys, values } = ensTextRecords(clean);
+
+      // Canonical onchain write: resolver.setTexts (owner-gated, gas-sponsored) — when configured.
+      if (resolverConfigured && keys.length > 0) {
+        await writeContractSponsored({
+          address: KREDITO_RESOLVER as `0x${string}`,
+          abi: kreditoResolverAbi,
+          functionName: "setTexts",
+          args: [node, keys, values],
+        });
+      }
+
+      // Mirror to Supabase for fast card rendering. The PATCH route requires a content-bound,
+      // TTL'd editMessage signature proving wallet control (see app/api/identity/[label]/route.ts).
+      const issuedAt = Date.now();
+      const signature = await signMessage(editMessage(borrower, label, profileDigest(clean), issuedAt));
+      const res = await fetch(`/api/identity/${encodeURIComponent(label)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ wallet: borrower, profile: form, issuedAt, signature }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.error || json?.message || "Save failed");
+      setIdentity(json.identity as EnsIdentity);
+      setSaved(true);
+      notification.success(
+        resolverConfigured ? "Profile saved onchain and mirrored" : "Profile saved (Supabase mirror)",
+      );
+    } catch (e) {
+      notification.error(e instanceof Error ? e.message : "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const displayName = label ? fullName(label) : "your credit identity";
+  const attestationHash = identity?.attestation_hash ?? null;
+  const txHash = identity?.tx_hash ?? null;
+
+  return (
+    <>
+      <PageHeader
+        step={4}
+        eyebrow="Credit identity · profile"
+        title="Set up your public profile"
+        subtitle="Your kredito.eth identity is a publicly-resolvable onchain credit credential. Add a public profile so anyone can verify your business — the approved status and attestation are issuer-locked and cannot be edited."
+      />
+
+      {/* VERIFIED CREDENTIAL HEADER — the publicly-exposed proof of credit */}
+      <Panel
+        eyebrow="Verified credential"
+        title={<span className="k-mono">{displayName}</span>}
+        className="mb-5"
+        action={
+          <span className="badge badge-success gap-1">
+            <ShieldCheckIcon className="h-3.5 w-3.5" /> Verified · Approved
+          </span>
+        }
+      >
+        <p className="text-sm text-base-content/70">
+          This is a publicly-resolvable onchain credit credential. The issuer wrote a locked <code>kredito.status</code>{" "}
+          of <span className="k-mono">approved</span> — anyone can verify it without trusting us. You own the name and
+          control your profile records, but not the credit status.
+        </p>
+        {attestationHash && (
+          <div className="mt-4">
+            <p className="k-eyebrow mb-1">Attestation hash</p>
+            <HashChip value={attestationHash} lead={10} tail={8} />
+          </div>
+        )}
+        <div className="mt-4 flex flex-wrap gap-3 text-sm">
+          {label && (
+            <a
+              href={`/identity/${label}`}
+              target="_blank"
+              rel="noreferrer"
+              className="link inline-flex items-center gap-1"
+            >
+              View public card
+              <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+            </a>
+          )}
+          {txHash && (
+            <a
+              href={sepoliaTxUrl(txHash)}
+              target="_blank"
+              rel="noreferrer"
+              className="link inline-flex items-center gap-1"
+            >
+              Mint transaction
+              <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+            </a>
+          )}
+          {resolverConfigured && (
+            <a
+              href={blockscoutAddressUrl(KREDITO_RESOLVER)}
+              target="_blank"
+              rel="noreferrer"
+              className="link inline-flex items-center gap-1"
+            >
+              Resolver on Blockscout
+              <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+            </a>
+          )}
+        </div>
+      </Panel>
+
+      <Panel eyebrow="Public profile" title="Edit your profile">
+        {loading ? (
+          <div className="flex items-center gap-2 text-sm text-base-content/60">
+            <span className="loading loading-spinner loading-sm" /> Loading your identity…
+          </div>
+        ) : !label ? (
+          <p className="text-sm text-base-content/65">
+            No minted identity was found for this wallet. Go back and mint your{" "}
+            <span className="k-mono">.kredito.eth</span> name first.
+          </p>
+        ) : (
+          <>
+            {!resolverConfigured && (
+              <div className="alert alert-warning mb-4">
+                <span className="text-sm">
+                  Resolver not configured (<code>NEXT_PUBLIC_KREDITO_RESOLVER</code> is unset). Onchain text records are
+                  skipped — your profile will be saved to the Supabase mirror only.
+                </span>
+              </div>
+            )}
+            <div className="grid sm:grid-cols-2 gap-4">
+              {PROFILE_FIELDS.map(f => (
+                <label key={f.col} className={f.col === "description" ? "sm:col-span-2 block" : "block"}>
+                  <span className="k-eyebrow">{f.label}</span>
+                  {f.col === "description" ? (
+                    <textarea
+                      className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 text-sm outline-none focus:border-primary transition-colors"
+                      rows={3}
+                      placeholder={f.placeholder}
+                      value={form[f.col]}
+                      onChange={e => setField(f.col, e.target.value)}
+                    />
+                  ) : (
+                    <input
+                      className="mt-1 w-full rounded-field border border-base-300 bg-base-100 px-3 py-2.5 text-sm outline-none focus:border-primary transition-colors"
+                      placeholder={f.placeholder}
+                      value={form[f.col]}
+                      onChange={e => setField(f.col, e.target.value)}
+                    />
+                  )}
+                </label>
+              ))}
+            </div>
+            <div className="mt-5 flex flex-wrap items-center gap-3">
+              <button className="btn btn-primary btn-sm gap-1" onClick={save} disabled={saving} type="button">
+                {saving ? (
+                  <>
+                    <span className="loading loading-spinner loading-xs" /> Saving…
+                  </>
+                ) : (
+                  <>
+                    <ShieldCheckIcon className="h-4 w-4" />
+                    {resolverConfigured ? "Save profile (onchain · sponsored)" : "Save profile (mirror)"}
+                  </>
+                )}
+              </button>
+              {saved && label && (
+                <a
+                  href={`/identity/${label}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="link text-sm inline-flex items-center gap-1"
+                >
+                  View public profile
+                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+                </a>
+              )}
+            </div>
+            {resolverConfigured && (
+              <p className="mt-3 text-xs text-base-content/50">
+                <code>setTexts</code> writes your ENS text records through the owner-gated resolver (gas sponsored),
+                then the Supabase mirror is updated with a content-bound signature so the public card renders fast.
+              </p>
+            )}
+          </>
+        )}
+      </Panel>
+
+      <div className="flex justify-between mt-6">
+        <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
+          <ArrowLeftIcon className="h-4 w-4" /> Back
+        </button>
+        <button className="btn btn-primary gap-1" onClick={onNext} type="button">
+          Continue to borrow <ArrowRightIcon className="h-4 w-4" />
+        </button>
+      </div>
+    </>
+  );
+};
 
 const BorrowSection = ({
   result,
@@ -1220,12 +1422,15 @@ const BorrowSection = ({
   const dec = typeof decimalsData === "number" ? decimalsData : 6;
   const sym = typeof symbolData === "string" ? symbolData : "mUSDC";
   const liq = typeof liquidity === "bigint" ? Number(formatUnits(liquidity, dec)) : 0;
-  const floor = typeof minScoreData === "bigint" ? Number(minScoreData) : DEMO_VAULT.minScore;
+  const minScore = result?.minEligibleScore ?? 750;
+  const floor = typeof minScoreData === "bigint" ? Number(minScoreData) : minScore;
   const loan = loanData as VaultLoan | undefined;
 
   const score = att?.attestation.score ?? result?.combinedScore ?? 0;
-  const limitUsd = result?.bureau.recommendedCreditLimitUsd ?? DEMO_VAULT.liquidityUsd;
-  // Demo: 1 token unit (mUSDC) == $1, so borrowable = min(credit limit, pool liquidity).
+  // The issuer-signed attestation carries the user's requested loan amount as the credit limit
+  // (6-decimal base units where 1 unit == $1). Falls back to 0 until the attestation is signed.
+  const limitUsd = att ? Number(formatUnits(att.attestation.maxPrincipal, dec)) : 0;
+  // 1 token unit (mUSDC) == $1, so borrowable = min(credit limit, pool liquidity).
   const maxBorrow = Math.max(0, Math.min(limitUsd, liq || limitUsd));
 
   const [amount, setAmount] = useState("");
@@ -1311,11 +1516,25 @@ const BorrowSection = ({
   return (
     <>
       <PageHeader
-        step={4}
+        step={5}
         eyebrow="Working-capital loan"
         title="Borrow against your attestation"
         subtitle="The vault verifies the issuer-signed attestation onchain (recover == issuer, score ≥ minimum, unexpired) and disburses an undercollateralized loan. Gas is sponsored."
       />
+
+      {!configured && (
+        <div className="alert alert-info mb-5">
+          <BanknotesIcon className="h-5 w-5 shrink-0" />
+          <div>
+            <p className="font-semibold">Coming soon — lending vault launching</p>
+            <p className="text-sm opacity-80">
+              Borrowing unlocks once the onchain lending vault is live. Your credit identity and attestation are already
+              issued, so you&apos;ll be able to draw against them the moment the vault deploys.
+            </p>
+          </div>
+          <span className="badge badge-info badge-outline">Coming soon</span>
+        </div>
+      )}
 
       {!configured ? (
         <Panel eyebrow="Onchain" title="Vault not configured">
@@ -1328,7 +1547,7 @@ const BorrowSection = ({
           <div className="grid sm:grid-cols-3 gap-4 mt-4">
             <Stat label="Credit limit" value={formatUsd(limitUsd)} />
             <Stat label="Your score" value={String(score)} />
-            <Stat label="Min score" value={String(DEMO_VAULT.minScore)} />
+            <Stat label="Min score" value={String(minScore)} />
           </div>
         </Panel>
       ) : (
@@ -1686,11 +1905,25 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
   return (
     <>
       <PageHeader
-        step={5}
+        step={6}
         eyebrow="Liquidity · ERC-4626 + ERC-7540"
         title="Provide liquidity to the vault"
         subtitle="LPs supply the asset and receive vault shares (ERC-4626). Because capital is lent out, redemptions are asynchronous (ERC-7540): request → the keeper fulfills as liquidity frees → claim. Gas is sponsored."
       />
+
+      {!configured && (
+        <div className="alert alert-info mb-5">
+          <BanknotesIcon className="h-5 w-5 shrink-0" />
+          <div>
+            <p className="font-semibold">Coming soon — lending vault launching</p>
+            <p className="text-sm opacity-80">
+              Liquidity provision unlocks once the onchain lending vault is live. LPs will supply assets and earn yield
+              from borrower interest the moment the vault deploys.
+            </p>
+          </div>
+          <span className="badge badge-info badge-outline">Coming soon</span>
+        </div>
+      )}
 
       {!configured ? (
         <Panel eyebrow="Onchain" title="Vault not configured">

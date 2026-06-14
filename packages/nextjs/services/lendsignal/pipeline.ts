@@ -5,18 +5,20 @@
  *   REDUCE : a final inference that weighs the per-section analyses into the overall
  *            credit decision.
  * Every query keeps its own attested request id (surfaced to the UI).
+ *
+ * NO synthetic fallbacks: if a section or the reduce inference fails or returns
+ * unparseable output, this THROWS a clear Error and the route surfaces it.
  */
 import { runInference } from "./confidentialAi";
-import type { BorrowerStrength } from "./creditBureau";
 import { SECTION_FOCUS, type SectionSummary, buildReducePrompt, buildSectionPrompt, detectSection } from "./prompt";
-import { parseReduceOutput, parseSectionOutput, placeholderSection } from "./score";
+import { parseReduceOutput, parseSectionOutput } from "./score";
 import type { BusinessProfile, ConfidentialAiResult, DocumentAnalysis, InferenceRef, UploadedDocument } from "./types";
 
 export type CreditPipelineResult = {
   ai: ConfidentialAiResult;
   attested: boolean;
   inferences: InferenceRef[];
-  reduceInferenceId?: string;
+  reduceInferenceId: string;
 };
 
 /** Admin-managed AI config the pipeline runs with (model + the section/reduce system prompts). */
@@ -25,29 +27,28 @@ export type PipelineAi = { model: string; sectionSystemPrompt: string; reduceSys
 export async function runCreditPipeline(
   profile: BusinessProfile,
   documents: UploadedDocument[],
-  strength: BorrowerStrength,
   aiCfg: PipelineAi,
 ): Promise<CreditPipelineResult> {
+  if (documents.length === 0) {
+    throw new Error("No documents to analyze — upload your business documents to run a credit check.");
+  }
+
   // --- MAP: one inference per document, in parallel ---
   const sectionResults = await Promise.all(
     documents.map(async doc => {
       const section = detectSection(doc.filename);
       const { type } = SECTION_FOCUS[section];
-      try {
-        // PDFs go through Docling preprocessing in the TEE — give them headroom.
-        const snap = await runInference(
-          {
-            prompt: buildSectionPrompt(section, profile, doc.filename),
-            systemPrompt: aiCfg.sectionSystemPrompt,
-            documents: [doc],
-            model: aiCfg.model,
-          },
-          { maxAttempts: 90 },
-        );
-        return { snap, type, filename: doc.filename };
-      } catch {
-        return { snap: undefined, type, filename: doc.filename };
-      }
+      // PDFs go through Docling preprocessing in the TEE — give them headroom.
+      const snap = await runInference(
+        {
+          prompt: buildSectionPrompt(section, profile, doc.filename),
+          systemPrompt: aiCfg.sectionSystemPrompt,
+          documents: [doc],
+          model: aiCfg.model,
+        },
+        { maxAttempts: 90 },
+      );
+      return { snap, type, filename: doc.filename };
     }),
   );
 
@@ -57,10 +58,10 @@ export async function runCreditPipeline(
   let scoreSum = 0;
 
   for (const r of sectionResults) {
-    const completed = r.snap?.status === "completed";
-    const { docAnalysis, sectionScore } = completed
-      ? parseSectionOutput(r.snap?.output, r.type, r.filename)
-      : placeholderSection(r.type, r.filename);
+    if (r.snap.status !== "completed") {
+      throw new Error(`Credit analysis failed — the analysis of ${r.filename} did not complete. Please retry.`);
+    }
+    const { docAnalysis, sectionScore } = parseSectionOutput(r.snap.output, r.type, r.filename);
     docAnalyses.push(docAnalysis);
     scoreSum += sectionScore;
     summaries.push({
@@ -68,39 +69,29 @@ export async function runCreditPipeline(
       filename: r.filename,
       json: JSON.stringify({ ...docAnalysis, section_score: sectionScore }),
     });
-    if (r.snap) inferences.push({ label: r.type, inferenceId: r.snap.id, attested: completed });
+    inferences.push({ label: r.type, inferenceId: r.snap.id, attested: true });
   }
 
   const avgSectionScore = docAnalyses.length ? Math.round(scoreSum / docAnalyses.length) : 0;
 
   // --- REDUCE: final decision over the per-section analyses ---
-  let reduceSnap;
-  try {
-    reduceSnap = await runInference({
-      prompt: buildReducePrompt(profile, summaries),
-      systemPrompt: aiCfg.reduceSystemPrompt,
-      documents: [],
-      model: aiCfg.model,
-    });
-  } catch {
-    reduceSnap = undefined;
+  const reduceSnap = await runInference({
+    prompt: buildReducePrompt(profile, summaries),
+    systemPrompt: aiCfg.reduceSystemPrompt,
+    documents: [],
+    model: aiCfg.model,
+  });
+  if (reduceSnap.status !== "completed") {
+    throw new Error("Credit analysis failed — the final decision did not complete. Please retry.");
   }
 
-  const reduceCompleted = reduceSnap?.status === "completed";
-  const ai = parseReduceOutput(
-    reduceCompleted ? reduceSnap?.output : undefined,
-    docAnalyses,
-    avgSectionScore,
-    strength,
-  );
-  if (reduceSnap)
-    inferences.push({ label: "Decision (reduce)", inferenceId: reduceSnap.id, attested: Boolean(reduceCompleted) });
+  const ai = parseReduceOutput(reduceSnap.output, docAnalyses, avgSectionScore);
+  inferences.push({ label: "Decision (reduce)", inferenceId: reduceSnap.id, attested: true });
 
-  const anySection = inferences.some(i => i.attested && i.label !== "Decision (reduce)");
   return {
     ai,
-    attested: Boolean(reduceCompleted) && anySection,
+    attested: true,
     inferences,
-    reduceInferenceId: reduceSnap?.id,
+    reduceInferenceId: reduceSnap.id,
   };
 }

@@ -3,8 +3,22 @@
 import { ArrowRightIcon } from "@heroicons/react/24/outline";
 import { CertificateCard } from "~~/components/kredito";
 import { FLOW } from "~~/kredito/flow";
-import { formatUsd } from "~~/kredito/format";
-import { DEMO_CERTIFICATE, DEMO_VAULT } from "~~/kredito/mock";
+import type { CreditCertificate } from "~~/kredito/types";
+
+// Illustrative certificate art for the logged-out hero only — no live data is shown
+// until the user logs in and runs a real, attested credit check.
+const HERO_CARD: CreditCertificate = {
+  borrower: "0x0000000000000000000000000000000000000000",
+  confidentialAiScore: 0,
+  combinedScore: 0,
+  riskTier: "low",
+  attestationHash: "0x0000000000000000000000000000000000000000000000000000000000000000",
+  evidenceDigest: "0x0000000000000000000000000000000000000000000000000000000000000000",
+  status: "none",
+  issuedAt: 0,
+  expiresAt: 0,
+  version: 1,
+};
 
 /**
  * Logged-out marketing landing. The single CTA triggers the wallet connection;
@@ -17,13 +31,14 @@ export const Landing = ({ onConnect }: { onConnect?: () => void }) => {
       <section className="k-hero text-white">
         <div className="mx-auto max-w-6xl px-5 py-16 sm:py-20 grid lg:grid-cols-2 gap-12 items-center">
           <div>
-            <p className="k-eyebrow text-white/60 mb-4">Onchain credit score · confidential AI + bureau</p>
+            <p className="k-eyebrow text-white/60 mb-4">Onchain credit score · confidential AI</p>
             <h1 className="k-display text-4xl sm:text-5xl font-semibold leading-[1.05]">
               An <span className="text-accent">onchain credit score</span> for any business wallet.
             </h1>
             <p className="mt-5 text-white/70 text-lg leading-relaxed max-w-xl">
-              Kredito blends a Chainlink Confidential AI attestation with a credit-bureau signal into a single,
-              updateable score — issued onchain as a soulbound <span className="text-white">Credit Certificate</span>.
+              Kredito analyzes your private business documents inside a Chainlink Confidential AI TEE and returns a
+              single attested 0–1000 score — issued onchain as a soulbound{" "}
+              <span className="text-white">Credit Certificate</span>.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <button className="btn btn-primary" onClick={onConnect} type="button">
@@ -35,19 +50,19 @@ export const Landing = ({ onConnect }: { onConnect?: () => void }) => {
           </div>
 
           <div className="flex justify-center lg:justify-end">
-            <CertificateCard cert={DEMO_CERTIFICATE} />
+            <CertificateCard cert={HERO_CARD} />
           </div>
         </div>
       </section>
 
-      {/* Stats strip */}
+      {/* Feature strip */}
       <section className="border-b border-base-300 bg-base-100">
         <div className="mx-auto max-w-6xl px-5 py-6 grid grid-cols-2 sm:grid-cols-4 gap-6">
           {[
-            { label: "Vault liquidity", value: formatUsd(DEMO_VAULT.liquidityUsd, true) },
-            { label: "Default reserve", value: formatUsd(DEMO_VAULT.reserveUsd, true) },
-            { label: "Min eligible score", value: DEMO_VAULT.minScore.toString() },
-            { label: "Origination fee", value: `${DEMO_VAULT.originationFeeBps / 100}%` },
+            { label: "Score model", value: "Confidential AI" },
+            { label: "Runs in", value: "Chainlink TEE" },
+            { label: "Score range", value: "0–1000" },
+            { label: "Min eligible score", value: "750" },
           ].map(s => (
             <div key={s.label}>
               <p className="k-eyebrow mb-1">{s.label}</p>

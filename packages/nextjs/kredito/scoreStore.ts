@@ -46,11 +46,9 @@ export const toUiRiskTier = (tier: ScoreResult["riskTier"]): RiskTier =>
 export const toCertificate = (result: ScoreResult, borrower: `0x${string}`): CreditCertificate => ({
   borrower,
   confidentialAiScore: result.scoreInputs.confidentialAiScore,
-  bureauScore: result.scoreInputs.bureauScore,
   combinedScore: result.combinedScore,
   riskTier: toUiRiskTier(result.riskTier),
   attestationHash: result.scoreInputs.attestationHash,
-  bureauReportHash: result.scoreInputs.bureauReportHash,
   evidenceDigest: result.scoreInputs.evidenceDigest,
   ensName: undefined,
   status: result.eligible ? "active" : "pending",

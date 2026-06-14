@@ -1,49 +1,106 @@
-# Kreditos — EIP-712 credit attestation ("Option B")
+# Kredito — EIP-712 credit attestation
 
-Kreditos gates lending with an **issuer-signed [EIP-712](https://eips.ethereum.org/EIPS/eip-712) credit attestation** instead of an onchain certificate registry. ENS provides identity/discovery; the signature provides trust; the vault verifies it onchain.
+Kredito gates borrowing with an **issuer-signed [EIP-712](https://eips.ethereum.org/EIPS/eip-712)
+credit attestation** rather than an on-chain certificate registry. The Confidential-AI score is
+turned into a typed, signed credential; `KreditoVault.borrow` verifies that signature on-chain
+(recovering the signer and requiring `signer == issuer`) before disbursing USDC.
 
 ## Why EIP-712
-[EIP-712](https://eips.ethereum.org/EIPS/eip-712) is the standard for **typed, structured data signing** — wallets render a human-readable struct instead of an opaque hash, and the signature is bound to a typed domain. It lets the protocol issue a portable, verifiable credit credential with **no registry contract and no per-borrower onchain write**: the issuer signs offchain, anyone verifies onchain or offchain.
+
+EIP-712 is the standard for **typed, structured-data signing** — wallets render a human-readable
+struct, and the signature is bound to a typed domain. It lets the protocol issue a verifiable credit
+credential with **no registry contract and no per-borrower on-chain write**: the issuer signs
+off-chain (server-side), and the vault verifies on-chain at borrow time.
+
+## One issuer key, two jobs
+
+The same `ISSUER_PRIVATE_KEY` that signs attestations also holds the `ISSUER_ROLE` on
+`KreditoController` (the ENSv2 minting authority — see `docs/ens.md`). One signer therefore both
+mints the `<label>.kredito.eth` identity and signs the borrow credential. In the demo this is a
+single key (`0x4B24116Df4C31c40aB5B3cb3bA3Ffe743A346978`); production splits a cold admin from a
+hardened hot issuer (multisig / HSM).
 
 ## The attestation
-The issuer signs this struct (`kredito/attestation.ts`, must match `KreditoCreditVault.sol` byte-for-byte):
+
+The issuer signs this struct. The TypeScript domain/types in
+`packages/nextjs/kredito/attestation.ts` mirror `KreditoVault.sol`'s `CREDIT_ATTESTATION_TYPEHASH`
+and `EIP712_DOMAIN_TYPEHASH` byte-for-byte:
 
 ```
-domain  = { name: "Kredito", version: "1", chainId: 11155111 }   // NO verifyingContract — chainId-bound only
-types   = CreditAttestation {
+domain = {
+  name:              "Kredito"
+  version:           "1"
+  chainId:           11155111            // Sepolia
+  verifyingContract: <KreditoVault addr> // C-1: signature valid only on THIS vault
+}
+
+CreditAttestation {
   borrower:       address
-  score:          uint256
+  score:          uint256   // 0–1000 (clamped server-side)
   riskTier:       uint8     // 0 = high, 1 = medium, 2 = low
   evidenceDigest: bytes32
   issuedAt:       uint256
   expiresAt:      uint256
+  maxPrincipal:   uint256   // H-2: issuer-bound max loan size, in asset units (USDC = 6 decimals)
 }
 ```
 
-Omitting `verifyingContract` from the domain makes the signature **portable** — the signer doesn't need the deployed vault address, and the same attestation works across vault deployments on the same chain.
+Two hardening properties bound into the signature:
+
+- **C-1 — `verifyingContract` in the domain.** The signature is valid only on the one deployed vault
+  (`address(this)`), killing cross-deployment replay. The signer must therefore know the vault
+  address; `attestationDomain(vault)` / `typedData(att, vault)` take it as a parameter rather than
+  using a constant domain.
+- **H-2 — `maxPrincipal`.** Appended as the LAST field (so prior fields hash identically). The issuer
+  binds the maximum loan size into the signature itself, and `borrow` enforces
+  `amount <= maxPrincipal`.
+- **H-1 — bounded lifetime.** The vault rejects any window longer than `MAX_ATTESTATION_TTL`
+  (30 days); the signing route mirrors this as `MAX_ATTESTATION_TTL_SECONDS` and rejects out-of-range
+  `expiresAt` early.
 
 ## Flow
+
 ```
-score pipeline (Confidential-AI) ─▶ POST /api/lendsignal/attest
-        issuer signs the CreditAttestation (server-side, ISSUER_PRIVATE_KEY)
-                                   │
-        ┌──────────────────────────┴───────────────────────────┐
-        ▼                                                        ▼
-  ENS (Sepolia): publish as text records on the business's       KreditoCreditVault.borrow(att, sig, amount)
-  ENS name — kredito.attestation / kredito.score / kredito.risk  recovers the signer onchain, requires
-  → anyone resolves + verifies the issuer signature              signer == issuer, then lends
+score pipeline (Confidential AI, see docs/chainlink.md)
+        │
+        ▼
+POST /api/lendsignal/attest      (server, ISSUER_PRIVATE_KEY — never reaches the client)
+        │  validates borrower/score/evidenceDigest/expiresAt/maxPrincipal,
+        │  stamps issuedAt = now, enforces the TTL window,
+        │  account.signTypedData(typedData(att, KREDITO_VAULT_ADDRESS))
+        ▼
+{ attestation, signature, issuer, digest }   (maxPrincipal serialized as a base-10 string)
+        │
+        ▼
+KreditoVault.borrow(att, sig, amount)   — borrower relays it; the vault:
+        recoverIssuer(att, sig) == issuer   (isEligible)
+        att.score >= minScore (default 750), riskTier != 0 (not high risk)
+        _assertFreshness (issued ≤ now < expiry, window ≤ MAX_ATTESTATION_TTL)
+        amount <= att.maxPrincipal, amount <= idleLiquidity(), no open loan
+        burns the attestation (attestationUsed[digest]) → one-time use, then disburses asset
 ```
 
-- **Issuer = signer = vault `issuer`** (the deployer). `ISSUER_PRIVATE_KEY` signs; it MUST equal the vault's configured issuer.
-- **Identity:** the business publishes the attestation as ENS text records (`kredito.attestation`, `kredito.score`, `kredito.risk`) on its own ENS name; resolution + signature-verification is permissionless.
-- **No certificate NFT / registry** — dropped in favour of this signed-credential model.
+- **Issuer = signer = vault `issuer`.** `recoverIssuer` recovers the signer from the EIP-712 digest;
+  a genuine attestation is one whose signer equals the configured `issuer`.
+- **One-time use.** The vault marks `attestationUsed[hashAttestation(att)]`, so a signature can't be
+  replayed for a second loan.
+- **No certificate NFT / registry** — the signed credential is the trust anchor; ENS carries the
+  discoverable identity.
 
 ## Related contracts / files
-- `packages/foundry/contracts/lendsignal/KreditoCreditVault.sol` — verifies the EIP-712 signature, gates `borrow`.
-- `packages/nextjs/kredito/attestation.ts` — domain/types/struct (client-safe; mirrors the contract).
-- `packages/nextjs/kredito/ens.ts` — publish/read/verify the attestation on ENS (Sepolia).
-- `packages/nextjs/app/api/lendsignal/attest/route.ts` — issuer signing endpoint.
 
-## Roadmap
-- The vault is being upgraded to an **[EIP-7540](https://eips.ethereum.org/EIPS/eip-7540) asynchronous ERC-4626 vault** (async deposit/redeem for the p2p funding pools) on a separate branch.
-- A richer ENSv2 **subname-issuance** identity layer (`<biz>.kredito.eth` via a custom controller/resolver, with editable profiles) is prototyped on `feat/ens-subnames` as a future enhancement on top of this attestation model.
+- `packages/foundry/contracts/lendsignal/KreditoVault.sol` — ERC-4626 + ERC-7540 async-redeem vault
+  that verifies the EIP-712 signature and gates `borrow`. **Built (87 tests), NOT yet deployed**; it
+  supersedes the earlier `KreditoCreditVault.sol`. `NEXT_PUBLIC_KREDITO_VAULT` must be set to its
+  address for the attest route to bind the domain.
+- `packages/nextjs/kredito/attestation.ts` — domain / types / struct + `typedData` helper
+  (client-safe; mirrors the contract).
+- `packages/nextjs/app/api/lendsignal/attest/route.ts` — issuer signing endpoint (`nodejs` runtime).
+- `packages/nextjs/kredito/vault.ts` — `KREDITO_VAULT_ADDRESS` + borrow-side ABI/helpers.
+
+## Status
+
+Borrow (vault) and the LP liquidity side are **DEFERRED** — the vault is built and tested but not
+deployed, so `/api/lendsignal/attest` returns `vault_not_configured` until `NEXT_PUBLIC_KREDITO_VAULT`
+points at a live deployment. The scoring → identity-mint path (which reuses the same issuer key) is
+live on Sepolia.

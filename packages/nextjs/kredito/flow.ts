@@ -24,8 +24,8 @@ export const FLOW: FlowStep[] = [
     step: 2,
     label: "Score",
     href: "/score",
-    tagline: "Confidential AI + bureau",
-    summary: "Chainlink Confidential AI and the CRS bureau are blended into a single creditworthiness score.",
+    tagline: "Confidential AI",
+    summary: "Chainlink Confidential AI analyzes your documents in a TEE and returns a single creditworthiness score.",
   },
   {
     key: "certificate",

@@ -15,18 +15,11 @@ import type { BusinessProfile } from "./types";
 const businessFacts = (profile: BusinessProfile): string[] =>
   [
     `Legal name: ${profile.legalName}`,
-    profile.dbaName ? `DBA: ${profile.dbaName}` : "",
     `Country: ${profile.country}`,
-    profile.state ? `State/Region: ${profile.state}` : "",
-    profile.city ? `City: ${profile.city}` : "",
+    profile.enterpriseType ? `Type of enterprise: ${profile.enterpriseType}` : "",
+    profile.taxNumber ? `Tax number: ${profile.taxNumber}` : "",
+    profile.registryNumber ? `Registry number: ${profile.registryNumber}` : "",
     profile.industry ? `Industry: ${profile.industry}` : "",
-    profile.taxIdLast4 ? `Tax ID (last 4): ${profile.taxIdLast4}` : "",
-    profile.ownerOrPrincipal
-      ? `Principal: ${profile.ownerOrPrincipal.name} (${profile.ownerOrPrincipal.role}${
-          profile.ownerOrPrincipal.ownershipPct ? `, ${profile.ownerOrPrincipal.ownershipPct}% ownership` : ""
-        })`
-      : "",
-    profile.requestedLoanUsd ? `Requested working-capital loan: $${profile.requestedLoanUsd.toLocaleString()}` : "",
   ].filter(Boolean);
 
 // ---------------------------------------------------------------- 1) CREDIT (documents)

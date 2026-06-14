@@ -28,18 +28,15 @@ export async function persistCreditCheck(args: {
       attested: result.attested,
       combined_score: result.combinedScore,
       ai_score: result.scoreInputs.confidentialAiScore,
-      bureau_score: result.scoreInputs.bureauScore,
       risk_tier: result.riskTier,
       eligible: result.eligible,
       attestation_hash: result.scoreInputs.attestationHash,
-      bureau_report_hash: result.scoreInputs.bureauReportHash,
       evidence_digest: result.scoreInputs.evidenceDigest,
-      offchain_inference_id: result.offchain?.inferenceId ?? null,
-      offchain_profile_score: result.offchain?.profileScore ?? null,
       legal_name: profile.legalName,
       country: profile.country,
-      industry: profile.industry ?? null,
-      requested_loan_usd: profile.requestedLoanUsd ?? null,
+      enterprise_type: profile.enterpriseType ?? null,
+      tax_number: profile.taxNumber ?? null,
+      registry_number: profile.registryNumber ?? null,
     });
     if (error) console.warn("[credit_checks] insert failed:", error.message);
   } catch (e) {

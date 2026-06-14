@@ -1,8 +1,20 @@
-# thelender — project memory
+# Kredito — project memory
 
 @AGENTS.md
 
-**thelender** is a sponsored, gasless onchain **lending** app on Ethereum (Sepolia). This file is the shared project memory for Claude Code — keep it current. New collaborators: also read `CONTRIBUTING.md` and `docs/architecture.md`.
+**Kredito** is a sponsored, gasless, **credit-gated undercollateralized USDC lending** app on Ethereum (Sepolia). A business proves creditworthiness through private document analysis (**Chainlink Confidential AI Attester**, run in a TEE), receives an **issuer-signed EIP-712 credit attestation**, mints an **ENS credit identity** — `<label>.kredito.eth`, an ENSv2 subname that is the onchain certificate — and then borrows undercollateralized USDC from a vault gated by that attestation. Liquidity providers supply USDC (ERC-4626 shares with ERC-7540 async redeem). This file is the shared project memory for Claude Code — keep it current. New collaborators: also read `CONTRIBUTING.md`, `docs/architecture.md`, and `docs/deployments.md`.
+
+## Product — the credit→identity→loan flow
+
+The whole app is one page: `packages/nextjs/components/kredito/KreditoFlow.tsx`, a 5-step flow.
+
+1. **Onboarding** — business profile (legal name, country, industry, requested amount) + evidence documents. Demo profiles preload realistic docs.
+2. **Score** — `POST /api/lendsignal/score`. Chainlink Confidential AI analyzes each document inside a TEE (raw docs never leave the enclave or touch the DB), reduces to a decision, blended 70/30 with a mock credit bureau → combined score (0–1000) + risk tier + eligibility. Persisted to Supabase `credit_checks` (results + content hashes only). Falls back to a deterministic mock when `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is unset.
+3. **Identity** — `POST /api/lendsignal/attest` (the issuer signs an EIP-712 `CreditAttestation` server-side), then the user mints `<label>.kredito.eth`: sign `mintMessage` (proves wallet control) → `POST /api/identity/mint` → `KreditoController.mint(label, wallet, attestationHash)`. The issuer submits the mint (holds `ISSUER_ROLE`); Privy sponsors the gas. Issuer-locked `kredito.status="approved"` + attestation hash are written; the user owns the name and its editable profile records, but cannot forge status.
+4. **Borrow** — `KreditoVault.borrow(attestation, signature, amount)`: the vault verifies the EIP-712 signature onchain (recovers signer == issuer), enforces score ≥ minScore, not-expired, `amount ≤ maxPrincipal`. *(Deferred — vault not yet deployed.)*
+5. **Liquidity** — ERC-4626 `deposit` + ERC-7540 async redeem (`requestRedeem` → `fulfillRedeem` → `redeem`). *(Deferred with the vault.)*
+
+**Why ENSv2 subnames are the certificate:** an ENSv2 name is natively an ERC-1155 token, so the subname *is* the credential — no separate soulbound NFT. The score stays private (Supabase, RLS); only the approved/denied status + attestation hash go onchain. See `docs/ens.md` and [[ens-kreditoone-ensv2]].
 **Base framework: Scaffold-ETH 2** (yarn-4 monorepo). SE-2's own agent guidance lives in `AGENTS.md` (imported above) — read it for the contract↔frontend hot-reload model, `scaffold.config.ts`, the typed `useScaffold*` hooks, and `yarn` workflows. This file adds our provider lab (Privy, Chainlink, ENS, Supabase, Graph, Blockscout) and onchain rules on top.
 
 ## Stack
@@ -11,7 +23,7 @@
 |-------|--------|-------|
 | Base scaffold | **Scaffold-ETH 2** | Yarn-4 monorepo: `packages/nextjs` + `packages/foundry`. Hot-reload contracts→frontend, burner wallet, local chain, faucet. |
 | App | Next.js (App Router) + TS | `packages/nextjs`. Deploy on Vercel. |
-| Auth + wallets | **Privy** (default) | `@privy-io/react-auth` + `@privy-io/wagmi`: login (email/wallet/google), embedded wallets on login, **ERC-4337 smart wallets with gas sponsorship** (Privy-managed paymaster, "App pays" gas credits set in the Dashboard). RainbowKit + burner-connector fully removed. Needs `NEXT_PUBLIC_PRIVY_APP_ID` at runtime + dashboard smart-wallets/gas-credits/allowed-origins — see `docs/privy.md`. |
+| Auth + wallets | **Privy** (default) | `@privy-io/react-auth` + `@privy-io/wagmi`: login is **email + Google only** (no external wallet connectors — one consistent gasless UX), embedded wallet on login, **ERC-4337 smart wallets with gas sponsorship** (Privy-managed paymaster, "App pays" gas credits set in the Dashboard). RainbowKit + burner-connector fully removed. Needs `NEXT_PUBLIC_PRIVY_APP_ID` at runtime + dashboard smart-wallets/gas-credits/allowed-origins — see `docs/privy.md`. |
 | Chain I/O | **viem** + **wagmi** | SE-2's typed `useScaffoldReadContract` / `useScaffoldWriteContract` hooks wrap wagmi — prefer them. |
 | ENS | viem ENS actions | Resolution always reads **Ethereum Mainnet**, even if the app runs on an L2. |
 | Oracles / onchain data | **Chainlink** | Data Feeds, VRF, CCIP, Data Streams, Functions. |
@@ -22,6 +34,21 @@
 | Explorer | **Blockscout** | Multichain reads/debugging via MCP. Verify contracts on Etherscan (V2, one key). |
 
 Working chain: **Ethereum Sepolia (11155111)** — set in `packages/nextjs/scaffold.config.ts` (`targetNetworks: [chains.sepolia]`). Everything (Privy smart-wallet sponsorship, Foundry deploy/verify, RPC) aligns to Sepolia. Mainnet is auto-added for ENS resolution only.
+
+## Onchain deployment (Sepolia, live — see `docs/deployments.md`)
+
+| Contract | Address | Role |
+|----------|---------|------|
+| **KreditoController** | `0xE498cbC0F0ED0b9059FEc2a7F1275834108915B0` | Issuance authority. `ISSUER_ROLE` mints `<label>.kredito.eth`; holds `ROLE_REGISTRAR` on the child registry. |
+| **KreditoResolver** | `0xE68F49F6256a2aF1702855dc62B82afF6Fd65F0E` | Split-ACL ENSIP-10 resolver: issuer-locked `kredito.status`/`lendsignal.attestation`, owner-editable profile records. |
+| subRegistry (ENSv2 UserRegistry proxy) | `0x2167d6DF85bC76f22b7f150220740444DC257AAf` | `kredito.eth`'s child registry; attached via `setSubregistry`. |
+| **KreditoVault** | *not yet deployed* | EIP-712 attestation-gated ERC-4626 + ERC-7540 lender (`lendsignal/KreditoVault.sol`, 87 tests). Borrow/Liquidity steps wire to it. |
+
+**Parent name:** `kredito.eth` is registered on **ENSv2 / Namechain on Sepolia** (`.eth` PermissionedRegistry `0xDEDB92913A25abE1f7BCDD85D8A344a43B398B67`).
+
+**Issuer key — one address does everything (demo posture):** `0x4B24116Df4C31c40aB5B3cb3bA3Ffe743A346978` is simultaneously the Foundry **deployer**, the controller's **`ISSUER_ROLE`**, the future vault **`issuer`**, the app's **`ISSUER_PRIVATE_KEY`** (signs the EIP-712 attestation + submits mints), and the **`kredito.eth` owner** (signed `setSubregistry`). For production, split a cold owner/admin from a hot issuer (the contracts already support `DEFAULT_ADMIN_ROLE` ≠ `ISSUER_ROLE`). Imported as foundry keystore `kredito-issuer`. **Deploy/verify with `forge script script/SetupKreditoEns.s.sol --rpc-url sepolia --account kredito-issuer …` — never hardcode these addresses; they're wired into the app via `NEXT_PUBLIC_KREDITO_CONTROLLER`/`NEXT_PUBLIC_KREDITO_RESOLVER` env (the ENS contracts are intentionally NOT in `deployedContracts.ts`).**
+
+**Supabase (project ref `rooclfwqvmwehaqmtflp`):** `credit_checks` (score results + hashes, private), `ai_config` (admin-managed AI model + prompts), `ens_identities` (issued-subname mirror + profile), `profiles`. RLS on, **service-role only** (auth is Privy, not Supabase Auth). The `/admin` dashboard (gated by `ADMIN_SECRET`) edits `ai_config` and shows live status.
 
 ## Run loop (Scaffold-ETH 2)
 Three terminals: `yarn chain` (local anvil) · `yarn deploy` (deploy contracts) · `yarn start` (frontend at :3000). Edit a contract → redeploy → frontend auto-adapts to the new ABI. `yarn test` runs Foundry tests.
