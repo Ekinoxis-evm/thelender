@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { Address as AddressDisplay } from "@scaffold-ui/components";
+import { recoverTypedDataAddress } from "viem";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -15,6 +16,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { CertificateCard, HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
+import { type CreditAttestation, typedData } from "~~/kredito/attestation";
 import { formatUsd } from "~~/kredito/format";
 import { DEMO_BORROWERS, DEMO_PROFILE, DEMO_VAULT } from "~~/kredito/mock";
 import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
@@ -836,25 +838,45 @@ const CertificateSection = ({
   onNext: () => void;
 }) => {
   const cert = toCertificate(result, borrower);
-  const [issuing, setIssuing] = useState(false);
-  const [tx, setTx] = useState<{ txHash: string; explorer: string; action: string } | null>(null);
+  const [signing, setSigning] = useState(false);
+  const [att, setAtt] = useState<{
+    attestation: CreditAttestation;
+    signature: `0x${string}`;
+    issuer: `0x${string}`;
+    digest: `0x${string}`;
+  } | null>(null);
+  const [verified, setVerified] = useState<boolean | null>(null);
 
-  const issueOnchain = async () => {
-    setIssuing(true);
+  // Option B: the issuer SIGNS an EIP-712 attestation; the vault verifies it onchain.
+  const signAttestation = async () => {
+    setSigning(true);
     try {
-      const res = await fetch("/api/lendsignal/issue", {
+      const res = await fetch("/api/lendsignal/attest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ borrower, scoreInputs: result.scoreInputs }),
+        body: JSON.stringify({
+          borrower,
+          score: result.combinedScore,
+          riskTier: result.riskTier,
+          evidenceDigest: result.scoreInputs.evidenceDigest,
+          expiresAt: result.scoreInputs.expiresAt,
+        }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.message || json?.error || "Issuance failed");
-      setTx(json);
-      notification.success(`Certificate ${json.action === "update" ? "updated" : "issued"} onchain`);
+      if (!res.ok) throw new Error(json?.message || json?.error || "Signing failed");
+      setAtt(json);
+      // Verify client-side exactly as the vault does onchain: recover the EIP-712 signer.
+      try {
+        const recovered = await recoverTypedDataAddress({ ...typedData(json.attestation), signature: json.signature });
+        setVerified(recovered.toLowerCase() === String(json.issuer).toLowerCase());
+      } catch {
+        setVerified(false);
+      }
+      notification.success("Attestation signed by the protocol issuer");
     } catch (e) {
-      notification.error(e instanceof Error ? e.message : "Issuance failed");
+      notification.error(e instanceof Error ? e.message : "Signing failed");
     } finally {
-      setIssuing(false);
+      setSigning(false);
     }
   };
 
@@ -863,15 +885,15 @@ const CertificateSection = ({
       <PageHeader
         step={3}
         eyebrow="Credit certificate"
-        title="A soulbound credit identity"
-        subtitle="The protocol issuer mints the blended score as an updateable, soulbound Credit Certificate — only scores, risk tier and content hashes go onchain."
+        title="An issuer-signed attestation"
+        subtitle="The protocol issuer signs an EIP-712 attestation over your score. The lending vault verifies the signature onchain (recovers signer == issuer) to gate the loan — the borrower can't forge it, and no certificate registry is needed. Your ENS name is the identity."
       />
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         <div className="flex justify-center">
           <CertificateCard cert={cert} />
         </div>
         <div className="space-y-4">
-          <Panel eyebrow="Summary" title="What gets published">
+          <Panel eyebrow="Summary" title="What gets attested">
             <ul className="space-y-2 text-sm text-base-content/75">
               <li className="flex justify-between">
                 <span>Combined score</span>
@@ -883,45 +905,54 @@ const CertificateSection = ({
               </li>
               <li className="flex justify-between">
                 <span>Status</span>
-                <span className="k-mono">{tx ? "ISSUED" : cert.status}</span>
+                <span className="k-mono">{att ? "ATTESTED" : cert.status}</span>
               </li>
             </ul>
           </Panel>
 
-          <Panel eyebrow="Onchain" title="Issue certificate">
-            {tx ? (
-              <div className="space-y-2">
-                <div className="flex items-center gap-2 text-success text-sm font-medium">
-                  <CheckCircleIcon className="h-5 w-5 shrink-0" />
-                  Certificate {tx.action === "update" ? "updated" : "issued"} onchain
+          <Panel eyebrow="Issuer attestation · EIP-712" title="Sign credit attestation">
+            {att ? (
+              <div className="space-y-3">
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  {verified ? (
+                    <span className="text-success inline-flex items-center gap-1.5">
+                      <CheckCircleIcon className="h-5 w-5" /> Verified — recovered signer = issuer
+                    </span>
+                  ) : (
+                    <span className="text-error">Signature did not verify</span>
+                  )}
                 </div>
                 <div>
-                  <p className="k-eyebrow mb-1">Transaction</p>
-                  <a
-                    href={tx.explorer}
-                    target="_blank"
-                    rel="noreferrer"
-                    className="link k-mono text-xs break-all inline-flex items-center gap-1"
-                  >
-                    {tx.txHash}
-                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
-                  </a>
+                  <p className="k-eyebrow mb-1">Issuer (signer)</p>
+                  <AddressDisplay address={att.issuer} />
                 </div>
+                <div>
+                  <p className="k-eyebrow mb-1">Signature</p>
+                  <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2">{att.signature}</code>
+                </div>
+                <div>
+                  <p className="k-eyebrow mb-1">EIP-712 digest</p>
+                  <HashChip value={att.digest} lead={10} tail={8} />
+                </div>
+                <p className="text-xs text-base-content/50">
+                  The vault calls <code>isEligible(attestation, signature)</code> — it recovers the signer onchain and
+                  checks it equals the issuer. No registry write needed.
+                </p>
               </div>
             ) : (
               <>
                 <p className="text-sm text-base-content/65 mb-3">
-                  The protocol issuer signs <code>issueCertificate</code> with the real attested score and hashes,
-                  minting the soulbound certificate to your wallet. (ENS gating comes later.)
+                  The protocol issuer signs an EIP-712 <code>CreditAttestation</code> (borrower, score, risk tier,
+                  evidence digest, expiry). The vault verifies it onchain to approve the loan.
                 </p>
-                <button className="btn btn-primary btn-sm w-full gap-1" onClick={issueOnchain} disabled={issuing}>
-                  {issuing ? (
+                <button className="btn btn-primary btn-sm w-full gap-1" onClick={signAttestation} disabled={signing}>
+                  {signing ? (
                     <>
-                      <span className="loading loading-spinner loading-xs" /> Issuing onchain…
+                      <span className="loading loading-spinner loading-xs" /> Signing…
                     </>
                   ) : (
                     <>
-                      <ShieldCheckIcon className="h-4 w-4" /> Issue certificate onchain
+                      <ShieldCheckIcon className="h-4 w-4" /> Sign credit attestation
                     </>
                   )}
                 </button>
