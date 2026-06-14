@@ -43,7 +43,7 @@ Working chain: **Ethereum Sepolia (11155111)** — set in `packages/nextjs/scaff
 | **KreditoController** | `0xE498cbC0F0ED0b9059FEc2a7F1275834108915B0` | Issuance authority. `ISSUER_ROLE` mints `<label>.kredito.eth`; holds `ROLE_REGISTRAR` on the child registry. |
 | **KreditoResolver** | `0xE68F49F6256a2aF1702855dc62B82afF6Fd65F0E` | Split-ACL ENSIP-10 resolver: issuer-locked `kredito.status`/`lendsignal.attestation`, owner-editable profile records. |
 | subRegistry (ENSv2 UserRegistry proxy) | `0x2167d6DF85bC76f22b7f150220740444DC257AAf` | `kredito.eth`'s child registry; attached via `setSubregistry`. |
-| **KreditoVault** | *not yet deployed* | EIP-712 attestation-gated ERC-4626 + ERC-7540 lender (`lendsignal/KreditoVault.sol`, 87 tests). Borrow/Liquidity steps wire to it. |
+| **KreditoVault** | `0x154fb3caf1e2f578629c097321ecda035cd2a8a1` | EIP-712 attestation-gated ERC-4626 + ERC-7540 lender. `issuer = 0x4b24…6978`, `asset = Circle Sepolia USDC 0x1c7D…7238`, `minScore = 750`. **Deployed but unseeded** — Borrow needs an LP to supply USDC first. NOTE: borrow gate (≥750) is stricter than the off-chain identity-mint threshold (≥600). Wire via `NEXT_PUBLIC_KREDITO_VAULT`. |
 
 **Parent name:** `kredito.eth` is registered on **ENSv2 / Namechain on Sepolia** (`.eth` PermissionedRegistry `0xDEDB92913A25abE1f7BCDD85D8A344a43B398B67`).
 
