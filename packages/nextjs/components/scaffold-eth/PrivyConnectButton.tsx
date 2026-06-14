@@ -190,14 +190,10 @@ const PrivyConnectButtonInner = () => {
     );
   }
 
-  // While wagmi hasn't reported the active chain yet, treat the app as "not
-  // ready" rather than skipping the wrong-network guard below (a `chain &&`
-  // guard would render the connected UI on an unknown network).
-  if (!chain) {
-    return <div className="btn btn-primary btn-sm pointer-events-none animate-pulse">…</div>;
-  }
-
-  if (chain.id !== targetNetwork.id) {
+  // Only flag a wrong network once wagmi has actually reported a chain. With a
+  // Privy embedded/smart wallet `chain` can stay undefined for a while; we must
+  // NOT get stuck on a loader, otherwise the profile + disconnect never appear.
+  if (chain && chain.id !== targetNetwork.id) {
     // Mirror RainbowKit's wrong-network UX with a Privy-aware logout.
     return (
       <div className="dropdown dropdown-end mr-2">
