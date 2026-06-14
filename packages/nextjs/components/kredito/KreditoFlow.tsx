@@ -5,6 +5,7 @@ import { Address as AddressDisplay } from "@scaffold-ui/components";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
+  ArrowTopRightOnSquareIcon,
   ArrowUpTrayIcon,
   CheckCircleIcon,
   CheckIcon,
@@ -494,38 +495,99 @@ const CertificateSection = ({
   onNext: () => void;
 }) => {
   const cert = toCertificate(result, borrower);
+  const [issuing, setIssuing] = useState(false);
+  const [tx, setTx] = useState<{ txHash: string; explorer: string; action: string } | null>(null);
+
+  const issueOnchain = async () => {
+    setIssuing(true);
+    try {
+      const res = await fetch("/api/lendsignal/issue", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ borrower, scoreInputs: result.scoreInputs }),
+      });
+      const json = await res.json();
+      if (!res.ok) throw new Error(json?.message || json?.error || "Issuance failed");
+      setTx(json);
+      notification.success(`Certificate ${json.action === "update" ? "updated" : "issued"} onchain`);
+    } catch (e) {
+      notification.error(e instanceof Error ? e.message : "Issuance failed");
+    } finally {
+      setIssuing(false);
+    }
+  };
+
   return (
     <>
       <PageHeader
         step={3}
         eyebrow="Credit certificate"
         title="A soulbound credit identity"
-        subtitle="The blended score is issued as an updateable, soulbound Credit Certificate — only scores, risk tier and content hashes are published onchain."
+        subtitle="The protocol issuer mints the blended score as an updateable, soulbound Credit Certificate — only scores, risk tier and content hashes go onchain."
       />
       <div className="grid lg:grid-cols-2 gap-6 items-start">
         <div className="flex justify-center">
           <CertificateCard cert={cert} />
         </div>
-        <Panel eyebrow="Summary" title="What gets published">
-          <ul className="space-y-2 text-sm text-base-content/75">
-            <li className="flex justify-between">
-              <span>Combined score</span>
-              <span className="k-mono font-semibold">{cert.combinedScore}</span>
-            </li>
-            <li className="flex justify-between">
-              <span>Risk tier</span>
-              <RiskBadge tier={cert.riskTier} size="sm" />
-            </li>
-            <li className="flex justify-between">
-              <span>Status</span>
-              <span className="k-mono">{cert.status}</span>
-            </li>
-          </ul>
-          <p className="mt-3 text-xs text-base-content/55">
-            Issuing onchain (registry <code>issueCertificate</code>) is the next integration step; this preview uses the
-            real attested score and hashes.
-          </p>
-        </Panel>
+        <div className="space-y-4">
+          <Panel eyebrow="Summary" title="What gets published">
+            <ul className="space-y-2 text-sm text-base-content/75">
+              <li className="flex justify-between">
+                <span>Combined score</span>
+                <span className="k-mono font-semibold">{cert.combinedScore}</span>
+              </li>
+              <li className="flex justify-between">
+                <span>Risk tier</span>
+                <RiskBadge tier={cert.riskTier} size="sm" />
+              </li>
+              <li className="flex justify-between">
+                <span>Status</span>
+                <span className="k-mono">{tx ? "ISSUED" : cert.status}</span>
+              </li>
+            </ul>
+          </Panel>
+
+          <Panel eyebrow="Onchain" title="Issue certificate">
+            {tx ? (
+              <div className="space-y-2">
+                <div className="flex items-center gap-2 text-success text-sm font-medium">
+                  <CheckCircleIcon className="h-5 w-5 shrink-0" />
+                  Certificate {tx.action === "update" ? "updated" : "issued"} onchain
+                </div>
+                <div>
+                  <p className="k-eyebrow mb-1">Transaction</p>
+                  <a
+                    href={tx.explorer}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="link k-mono text-xs break-all inline-flex items-center gap-1"
+                  >
+                    {tx.txHash}
+                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p className="text-sm text-base-content/65 mb-3">
+                  The protocol issuer signs <code>issueCertificate</code> with the real attested score and hashes,
+                  minting the soulbound certificate to your wallet. (ENS gating comes later.)
+                </p>
+                <button className="btn btn-primary btn-sm w-full gap-1" onClick={issueOnchain} disabled={issuing}>
+                  {issuing ? (
+                    <>
+                      <span className="loading loading-spinner loading-xs" /> Issuing onchain…
+                    </>
+                  ) : (
+                    <>
+                      <ShieldCheckIcon className="h-4 w-4" /> Issue certificate onchain
+                    </>
+                  )}
+                </button>
+              </>
+            )}
+          </Panel>
+        </div>
       </div>
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
