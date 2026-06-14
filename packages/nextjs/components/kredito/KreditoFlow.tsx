@@ -185,27 +185,40 @@ const detectSlot = (filename: string): string | null => {
 /** Animated multi-step loader shown while the map→reduce pipeline runs. */
 const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
   const [done, setDone] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     setDone(0);
-    const t = setInterval(() => setDone(d => Math.min(d + 1, steps.length - 1)), 7000);
-    return () => clearInterval(t);
+    setElapsed(0);
+    const stepTimer = setInterval(() => setDone(d => Math.min(d + 1, steps.length - 1)), 12000);
+    const clock = setInterval(() => setElapsed(e => e + 1), 1000);
+    return () => {
+      clearInterval(stepTimer);
+      clearInterval(clock);
+    };
   }, [steps.length]);
+
+  const mmss = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, "0")}`;
+  const onLast = done >= steps.length - 1;
 
   return (
     <div className="k-card p-6 max-w-2xl mx-auto">
-      <div className="flex items-center gap-3 mb-5">
-        <span className="loading loading-spinner loading-md text-primary" />
-        <div>
+      <div className="flex items-center justify-between gap-3 mb-1">
+        <div className="flex items-center gap-3">
+          <span className="loading loading-spinner loading-md text-primary" />
           <p className="font-semibold">Running confidential analysis…</p>
-          <p className="text-xs text-base-content/55">
-            Each document is analyzed one by one in the Chainlink TEE, then reduced to a decision.
-          </p>
         </div>
+        <span className="k-mono text-sm text-base-content/60 tabular-nums">{mmss}</span>
       </div>
+      <p className="text-xs text-base-content/55 mb-5">
+        Each document is analyzed one by one in the Chainlink TEE, then reduced to a decision. PDFs go through Docling
+        preprocessing, so this can take ~2–3 minutes — keep this tab open.
+      </p>
       <ul className="space-y-2.5">
         {steps.map((s, i) => {
-          const isDone = i < done;
-          const isCurrent = i === done;
+          const isLastStep = i === steps.length - 1;
+          // The final step keeps spinning (with the elapsed clock) until the server responds.
+          const isDone = i < done && !(isLastStep && onLast);
+          const isCurrent = i === done || (isLastStep && onLast);
           return (
             <li key={s} className="flex items-center gap-3 text-sm">
               <span
@@ -228,6 +241,11 @@ const AnalyzingProgress = ({ steps }: { steps: string[] }) => {
           );
         })}
       </ul>
+      {onLast && (
+        <p className="mt-4 text-xs text-base-content/50">
+          Finalizing the verdict — almost there. Large PDFs can push this past 2 minutes.
+        </p>
+      )}
     </div>
   );
 };
