@@ -92,4 +92,14 @@ export const kreditoControllerAbi = [
     inputs: [{ name: "label", type: "string" }],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "setStatus",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "label", type: "string" },
+      { name: "status", type: "string" },
+    ],
+    outputs: [],
+  },
 ] as const;

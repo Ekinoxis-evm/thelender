@@ -81,3 +81,35 @@ export async function updateProfile(
   if (error) throw new Error(error.message);
   return data as EnsIdentity;
 }
+
+/** Upsert a CRE decision. The combined_score is PRIVATE and only stored here (never returned). */
+export async function upsertDecision(d: {
+  wallet_address: string;
+  status: CreditStatus;
+  combined_score?: number | null;
+  confidential_ai_score?: number | null;
+  bureau_score?: number | null;
+  risk_tier?: "low" | "medium" | "high" | null;
+  attestation_hash?: string | null;
+  bureau_report_hash?: string | null;
+  evidence_digest?: string | null;
+  expires_at?: string | null;
+}): Promise<void> {
+  const db = createAdminClient();
+  const { error } = await db
+    .from("credit_decisions")
+    .upsert({ ...d, wallet_address: d.wallet_address.toLowerCase() }, { onConflict: "wallet_address" });
+  if (error) throw new Error(error.message);
+}
+
+/** Mirror a status change onto an existing issued identity (if any). */
+export async function updateIdentityStatus(wallet: string, status: CreditStatus): Promise<EnsIdentity | null> {
+  const db = createAdminClient();
+  const { data } = await db
+    .from("ens_identities")
+    .update({ status })
+    .eq("wallet_address", wallet.toLowerCase())
+    .select("*")
+    .maybeSingle();
+  return (data as EnsIdentity) ?? null;
+}
