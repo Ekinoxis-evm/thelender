@@ -24,7 +24,8 @@ import { IERC20Metadata } from "@openzeppelin/contracts/token/ERC20/extensions/I
  *               attestation-gated lender with ERC-7540 asynchronous redeem. The deployer is set
  *               as `issuer`, so the demo signing key == deployer.
  *
- * Supersedes DeployKreditoVault.s.sol (KreditoCreditVault). That script is left untouched.
+ * Supersedes the deprecated KreditoCreditVault deploy (removed). For the full lending stack
+ * (vault + insurance pool, wired) use DeployKreditoFullStack.s.sol.
  *
  * Example:
  *   yarn deploy --file DeployKreditoVaultV2.s.sol

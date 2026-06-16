@@ -5,6 +5,7 @@ import { IERC20 } from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import { SafeERC20 } from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import { ERC20 } from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import { ERC4626 } from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
+import { IERC4626 } from "@openzeppelin/contracts/interfaces/IERC4626.sol";
 import { Ownable } from "@openzeppelin/contracts/access/Ownable.sol";
 import { Ownable2Step } from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
@@ -64,6 +65,7 @@ contract KreditoInsurancePool is ERC4626, Ownable2Step, Pausable, ReentrancyGuar
     error OnlyVault();
     error CooldownActive();
     error CooldownTooLong();
+    error AssetMismatch();
 
     // ---------------------------------------------------------------------
     // Events
@@ -205,8 +207,20 @@ contract KreditoInsurancePool is ERC4626, Ownable2Step, Pausable, ReentrancyGuar
     // ---------------------------------------------------------------------
 
     /// @notice Set the lending vault that may call `processClaim`. Owner-only, non-zero.
+    /// @dev    M-2 (mirror): best-effort assert the vault shares this pool's underlying asset. The
+    ///         check is TOLERANT — if `newVault` does not expose ERC-4626 `asset()` (e.g. an EOA or a
+    ///         test harness impersonating the vault) it is skipped — but a vault that DOES expose a
+    ///         mismatched asset is rejected. The vault side (`KreditoVault.setInsurancePool`) enforces
+    ///         the same invariant strictly, so a correctly-wired pair always matches.
     function setVault(address newVault) external onlyOwner {
         if (newVault == address(0)) revert ZeroAddress();
+        if (newVault.code.length > 0) {
+            try IERC4626(newVault).asset() returns (address vaultAsset) {
+                if (vaultAsset != asset()) revert AssetMismatch();
+            } catch {
+                // newVault does not expose ERC-4626 asset(); skip the mirror check.
+            }
+        }
         emit VaultUpdated(vault, newVault);
         vault = newVault;
     }

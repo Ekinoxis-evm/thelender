@@ -20,25 +20,33 @@ contract MockSubRegistry is IStandardRegistry {
     Call public lastCall;
     uint256 public nextTokenId = 1;
 
-    function register(string calldata label, address owner, IRegistry, address resolver, uint256 roleBitmap, uint64 expiry)
-        external
-        returns (uint256 tokenId)
-    {
+    function register(
+        string calldata label,
+        address owner,
+        IRegistry,
+        address resolver,
+        uint256 roleBitmap,
+        uint64 expiry
+    ) external returns (uint256 tokenId) {
         lastCall = Call(label, owner, resolver, roleBitmap, expiry);
         tokenId = nextTokenId++;
     }
 
     function setResolver(uint256, address) external { }
     function setSubregistry(uint256, IRegistry) external { }
+
     function getExpiry(uint256) external pure returns (uint64) {
         return 0;
     }
+
     function getSubregistry(string calldata) external view returns (IRegistry) {
         return IRegistry(address(this));
     }
+
     function getResolver(string calldata) external pure returns (address) {
         return address(0);
     }
+
     function getParent() external pure returns (IRegistry, string memory) {
         return (IRegistry(address(0)), "");
     }

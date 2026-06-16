@@ -34,11 +34,12 @@ contract KreditoVaultTest is Test {
     uint256 internal constant SHARE_OFFSET = 1e6;
     uint256 internal constant SEED_SHARES = SEED * SHARE_OFFSET;
 
-    // Locally recomputed EIP-712 constants — MUST match the contract & the viem signer.
+    // Locally recomputed EIP-712 constants — MUST match the contract & the viem signer
+    // (`packages/nextjs/kredito/attestation.ts`): C-1 verifyingContract + H-2 maxPrincipal field.
     bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId)");
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 internal constant CREDIT_ATTESTATION_TYPEHASH = keccak256(
-        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt)"
+        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt,uint256 maxPrincipal)"
     );
     bytes32 internal localDomainSeparator;
 
@@ -67,8 +68,15 @@ contract KreditoVaultTest is Test {
         // buffer 0 (allow borrowing the full idle), exposure cap 100%, minCover 0, protocolFee 0.
         vault.setRiskParams(0, 10_000, 0, 0);
 
+        // C-1: domain separator binds `verifyingContract` = the deployed vault address.
         localDomainSeparator = keccak256(
-            abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Kredito")), keccak256(bytes("1")), block.chainid)
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("Kredito")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(vault)
+            )
         );
 
         // Seed liquidity through the ERC-4626 deposit path (this test contract is the first LP).
@@ -81,7 +89,18 @@ contract KreditoVaultTest is Test {
     // EIP-712 helpers (mirror the contract / viem signer byte-for-byte)
     // ---------------------------------------------------------------------
 
+    /// @dev Default `maxPrincipal` is large enough to cover any happy-path borrow in this suite.
+    uint256 internal constant MAX_PRINCIPAL = type(uint256).max;
+
     function _att(uint256 score, uint8 riskTier, uint256 expiresAt)
+        internal
+        view
+        returns (KreditoVault.CreditAttestation memory)
+    {
+        return _att(score, riskTier, expiresAt, MAX_PRINCIPAL);
+    }
+
+    function _att(uint256 score, uint8 riskTier, uint256 expiresAt, uint256 maxPrincipal)
         internal
         view
         returns (KreditoVault.CreditAttestation memory)
@@ -92,7 +111,8 @@ contract KreditoVaultTest is Test {
             riskTier: riskTier,
             evidenceDigest: keccak256("evidence"),
             issuedAt: block.timestamp,
-            expiresAt: expiresAt
+            expiresAt: expiresAt,
+            maxPrincipal: maxPrincipal
         });
     }
 
@@ -105,7 +125,8 @@ contract KreditoVaultTest is Test {
                 att.riskTier,
                 att.evidenceDigest,
                 att.issuedAt,
-                att.expiresAt
+                att.expiresAt,
+                att.maxPrincipal
             )
         );
         return keccak256(abi.encodePacked("\x19\x01", localDomainSeparator, structHash));
@@ -150,7 +171,9 @@ contract KreditoVaultTest is Test {
     }
 
     // =====================================================================
-    // EIP-712 parity — confirm byte-for-byte identical to KreditoCreditVault
+    // EIP-712 parity — the on-chain schema MUST equal the frontend signer
+    // (`packages/nextjs/kredito/attestation.ts`): C-1 verifyingContract domain
+    // + H-2 7-field CreditAttestation incl. maxPrincipal.
     // =====================================================================
 
     function test_EIP712_DomainAndTypehashesUnchanged() public view {
@@ -159,6 +182,7 @@ contract KreditoVaultTest is Test {
         assertEq(vault.CREDIT_ATTESTATION_TYPEHASH(), CREDIT_ATTESTATION_TYPEHASH, "att typehash mismatch");
         assertEq(keccak256(bytes(vault.DOMAIN_NAME())), keccak256(bytes("Kredito")), "name != Kredito");
         assertEq(keccak256(bytes(vault.DOMAIN_VERSION())), keccak256(bytes("1")), "version != 1");
+        assertEq(vault.MAX_ATTESTATION_TTL(), 30 days, "MAX_ATTESTATION_TTL != 30 days (mirror of attestation.ts)");
     }
 
     function test_EIP712_HashAndRecoverMatch() public view {
@@ -166,6 +190,175 @@ contract KreditoVaultTest is Test {
         assertEq(vault.hashAttestation(att), _digest(att), "digest mismatch");
         bytes memory sig = _sign(ISSUER_PK, att);
         assertEq(vault.recoverIssuer(att, sig), issuer, "recovered signer != issuer");
+    }
+
+    /// @dev PARITY / REGRESSION (C-1 + H-2): reproduce the EXACT EIP-712 digest the frontend signer
+    ///      (`attestation.ts`) produces — domain typehash WITH `verifyingContract` = the deployed vault
+    ///      address, 7-field CreditAttestation typehash INCLUDING `maxPrincipal` — sign it with the
+    ///      issuer key, and assert the vault accepts it (`recoverIssuer == issuer`, `isEligible`,
+    ///      `borrow` succeeds). This is the proof that the on-chain schema == the off-chain signer.
+    function test_EIP712_Parity_FrontendSignerSchemaAccepted() public {
+        // Build the domain separator EXACTLY as attestation.ts's `attestationDomain(vault)` would:
+        //   EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)
+        bytes32 frontendDomainTypehash =
+            keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+        bytes32 frontendDomainSeparator = keccak256(
+            abi.encode(
+                frontendDomainTypehash,
+                keccak256(bytes("Kredito")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(vault)
+            )
+        );
+        // The vault MUST have cached this exact domain separator.
+        assertEq(vault.domainSeparator(), frontendDomainSeparator, "vault domain != frontend domain (C-1)");
+
+        // Build the struct hash EXACTLY as attestation.ts's `ATTESTATION_TYPES.CreditAttestation`:
+        //   borrower, score, riskTier, evidenceDigest, issuedAt, expiresAt, maxPrincipal
+        bytes32 frontendAttTypehash = keccak256(
+            "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt,uint256 maxPrincipal)"
+        );
+        KreditoVault.CreditAttestation memory att = KreditoVault.CreditAttestation({
+            borrower: borrower,
+            score: 800,
+            riskTier: 2,
+            evidenceDigest: keccak256("evidence"),
+            issuedAt: block.timestamp,
+            // route.ts: issuedAt = now, expiresAt = now + MAX_ATTESTATION_TTL_SECONDS (30 days).
+            expiresAt: block.timestamp + 30 days,
+            maxPrincipal: LOAN
+        });
+        bytes32 structHash = keccak256(
+            abi.encode(
+                frontendAttTypehash,
+                att.borrower,
+                att.score,
+                att.riskTier,
+                att.evidenceDigest,
+                att.issuedAt,
+                att.expiresAt,
+                att.maxPrincipal
+            )
+        );
+        bytes32 frontendDigest = keccak256(abi.encodePacked("\x19\x01", frontendDomainSeparator, structHash));
+
+        // The vault recomputes the same digest from the struct.
+        assertEq(vault.hashAttestation(att), frontendDigest, "vault digest != frontend digest");
+
+        // Sign that exact digest with the issuer key (as the server signer does).
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ISSUER_PK, frontendDigest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        // The vault recovers the issuer and accepts the attestation.
+        assertEq(vault.recoverIssuer(att, sig), issuer, "recovered != issuer (schema parity broken)");
+        assertTrue(vault.isEligible(att, sig), "isEligible false on frontend-schema attestation");
+
+        // And a borrow up to maxPrincipal succeeds end-to-end.
+        vm.prank(borrower);
+        uint256 loanId = vault.borrow(att, sig, LOAN, TERM);
+        assertEq(vault.getLoan(loanId).principal, LOAN, "borrow against frontend-schema attestation succeeded");
+    }
+
+    // =====================================================================
+    // H-2 maxPrincipal cap + H-1 TTL window — negative tests
+    // =====================================================================
+
+    function test_Borrow_ExceedsMaxPrincipalReverts() public {
+        // Issuer binds maxPrincipal = LOAN; borrowing LOAN + 1 must revert.
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 1 days, LOAN);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.AmountExceedsMaxPrincipal.selector);
+        vault.borrow(att, sig, LOAN + 1, TERM);
+    }
+
+    function test_Borrow_AtMaxPrincipalSucceeds() public {
+        // Borrowing exactly maxPrincipal is allowed.
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 1 days, LOAN);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.prank(borrower);
+        uint256 loanId = vault.borrow(att, sig, LOAN, TERM);
+        assertEq(vault.getLoan(loanId).principal, LOAN, "borrow exactly maxPrincipal allowed");
+    }
+
+    function test_Borrow_TtlTooLongReverts() public {
+        // expiresAt - issuedAt = 30 days + 1 > MAX_ATTESTATION_TTL -> rejected (NotEligible gate first).
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 30 days + 1, LOAN);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.NotEligible.selector);
+        vault.borrow(att, sig, LOAN, TERM);
+    }
+
+    function test_Borrow_ExactlyMaxTtlSucceeds() public {
+        // expiresAt - issuedAt == MAX_ATTESTATION_TTL (30 days) is the boundary and is accepted.
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 30 days, LOAN);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.prank(borrower);
+        uint256 loanId = vault.borrow(att, sig, LOAN, TERM);
+        assertEq(vault.getLoan(loanId).principal, LOAN, "borrow at exactly max TTL allowed");
+    }
+
+    function test_Borrow_NotYetValidReverts() public {
+        // issuedAt in the future -> not yet valid -> NotEligible gate rejects it.
+        KreditoVault.CreditAttestation memory att = KreditoVault.CreditAttestation({
+            borrower: borrower,
+            score: 800,
+            riskTier: 2,
+            evidenceDigest: keccak256("evidence"),
+            issuedAt: block.timestamp + 1 days, // future
+            expiresAt: block.timestamp + 2 days,
+            maxPrincipal: LOAN
+        });
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.NotEligible.selector);
+        vault.borrow(att, sig, LOAN, TERM);
+    }
+
+    function test_Borrow_ExpiredAttestationReverts() public {
+        // Valid 1-day window, then warp past expiry -> NotEligible (expired).
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 1 days, LOAN);
+        bytes memory sig = _sign(ISSUER_PK, att);
+        vm.warp(att.expiresAt + 1);
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.NotEligible.selector);
+        vault.borrow(att, sig, LOAN, TERM);
+    }
+
+    /// @dev C-1: a signature bound to a DIFFERENT vault address must NOT be accepted here. We forge a
+    ///      digest using a bogus verifyingContract, sign it, and assert the real vault rejects it.
+    function test_EIP712_C1_SignatureBoundToWrongVaultRejected() public {
+        address wrongVault = address(0xDEADBEEF);
+        bytes32 wrongDomain = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Kredito")), keccak256(bytes("1")), block.chainid, wrongVault
+            )
+        );
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 1 days, LOAN);
+        bytes32 structHash = keccak256(
+            abi.encode(
+                CREDIT_ATTESTATION_TYPEHASH,
+                att.borrower,
+                att.score,
+                att.riskTier,
+                att.evidenceDigest,
+                att.issuedAt,
+                att.expiresAt,
+                att.maxPrincipal
+            )
+        );
+        bytes32 wrongDigest = keccak256(abi.encodePacked("\x19\x01", wrongDomain, structHash));
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ISSUER_PK, wrongDigest);
+        bytes memory sig = abi.encodePacked(r, s, v);
+
+        // Recovery against THIS vault's domain yields a non-issuer address -> not eligible.
+        assertTrue(vault.recoverIssuer(att, sig) != issuer, "wrong-vault sig must not recover to issuer");
+        assertFalse(vault.isEligible(att, sig), "wrong-vault sig must be ineligible (C-1)");
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.NotEligible.selector);
+        vault.borrow(att, sig, LOAN, TERM);
     }
 
     // =====================================================================
@@ -511,15 +704,17 @@ contract KreditoVaultTest is Test {
     }
 
     function test_Borrow_ReplayGuardReverts() public {
-        // Long-lived attestation so amortizing the loan (which warps ~12 months forward) does not
-        // expire it before we re-test the replay guard. The digest is burned at origination, so the
-        // SAME attestation cannot fund a second loan even while still valid.
-        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 3650 days);
+        // Max-TTL attestation (30 days). The digest is burned at origination, so the SAME attestation
+        // cannot fund a second loan. We re-test the replay guard immediately after origination (no warp
+        // between the two borrow calls), so the 30-day window has not lapsed.
+        KreditoVault.CreditAttestation memory att = _att(800, 2, block.timestamp + 30 days);
         bytes memory sig = _sign(ISSUER_PK, att);
         vm.prank(borrower);
-        uint256 loanId = vault.borrow(att, sig, LOAN, TERM);
-        _repayInFull(loanId);
+        vault.borrow(att, sig, LOAN, TERM);
 
+        // The digest is burned at origination, so the SAME attestation cannot fund a second loan —
+        // attempted immediately (within the 30-day window), so the replay guard (not expiry) is what
+        // rejects it.
         vm.prank(borrower);
         vm.expectRevert(KreditoVault.AttestationAlreadyUsed.selector);
         vault.borrow(att, sig, LOAN, TERM);

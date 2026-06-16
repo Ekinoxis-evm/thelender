@@ -32,10 +32,12 @@ contract KreditoFullStackTest is Test {
     uint256 internal constant COVER_SEED = 500_000 * UNIT; // insurance reserves
     uint256 internal constant LOAN = 12_000 * UNIT; // divides evenly by 12
 
+    // EIP-712 constants mirror the contract & the viem signer (`attestation.ts`): C-1
+    // verifyingContract domain + H-2 7-field CreditAttestation incl. maxPrincipal.
     bytes32 internal constant EIP712_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId)");
+        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
     bytes32 internal constant CREDIT_ATTESTATION_TYPEHASH = keccak256(
-        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt)"
+        "CreditAttestation(address borrower,uint256 score,uint8 riskTier,bytes32 evidenceDigest,uint256 issuedAt,uint256 expiresAt,uint256 maxPrincipal)"
     );
     bytes32 internal localDomainSeparator;
 
@@ -56,8 +58,15 @@ contract KreditoFullStackTest is Test {
         // protocol fee 20%.
         vault.setRiskParams(1000, 5000, 2000, 2000);
 
+        // C-1: domain separator binds `verifyingContract` = the deployed vault address.
         localDomainSeparator = keccak256(
-            abi.encode(EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Kredito")), keccak256(bytes("1")), block.chainid)
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH,
+                keccak256(bytes("Kredito")),
+                keccak256(bytes("1")),
+                block.chainid,
+                address(vault)
+            )
         );
 
         // Seed the lending vault (this contract is the LP).
@@ -81,7 +90,17 @@ contract KreditoFullStackTest is Test {
     ///      when a test borrows multiple times for the same address).
     uint256 internal attNonce;
 
+    /// @dev Default `maxPrincipal` covers any borrow in this suite (H-2 cap not under test here).
+    uint256 internal constant MAX_PRINCIPAL = type(uint256).max;
+
     function _att(address who, uint256 score, uint8 riskTier, uint256 expiresAt)
+        internal
+        returns (KreditoVault.CreditAttestation memory)
+    {
+        return _att(who, score, riskTier, expiresAt, MAX_PRINCIPAL);
+    }
+
+    function _att(address who, uint256 score, uint8 riskTier, uint256 expiresAt, uint256 maxPrincipal)
         internal
         returns (KreditoVault.CreditAttestation memory)
     {
@@ -91,11 +110,27 @@ contract KreditoFullStackTest is Test {
             riskTier: riskTier,
             evidenceDigest: keccak256(abi.encodePacked("evidence", who, attNonce++)),
             issuedAt: block.timestamp,
-            expiresAt: expiresAt
+            expiresAt: expiresAt,
+            maxPrincipal: maxPrincipal
         });
     }
 
     function _sign(KreditoVault.CreditAttestation memory att) internal view returns (bytes memory) {
+        return _signFor(address(vault), att);
+    }
+
+    /// @dev C-1: sign `att` against an ARBITRARY vault's domain (verifyingContract = `vaultAddr`), for
+    ///      tests that originate against a freshly-deployed vault rather than the suite's `vault`.
+    function _signFor(address vaultAddr, KreditoVault.CreditAttestation memory att)
+        internal
+        view
+        returns (bytes memory)
+    {
+        bytes32 domainSep = keccak256(
+            abi.encode(
+                EIP712_DOMAIN_TYPEHASH, keccak256(bytes("Kredito")), keccak256(bytes("1")), block.chainid, vaultAddr
+            )
+        );
         bytes32 structHash = keccak256(
             abi.encode(
                 CREDIT_ATTESTATION_TYPEHASH,
@@ -104,20 +139,23 @@ contract KreditoFullStackTest is Test {
                 att.riskTier,
                 att.evidenceDigest,
                 att.issuedAt,
-                att.expiresAt
+                att.expiresAt,
+                att.maxPrincipal
             )
         );
-        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", localDomainSeparator, structHash));
+        bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSep, structHash));
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(ISSUER_PK, digest);
         return abi.encodePacked(r, s, v);
     }
 
-    /// @dev Originate a loan for `who` with `riskTier` (default low=2), long-lived attestation.
+    /// @dev Originate a loan for `who` with `riskTier` (default low=2). H-1: the attestation window is
+    ///      the max 30-day TTL (the attestation only needs to be valid AT borrow time, which is the
+    ///      current block — repayments later in the schedule are unaffected by attestation expiry).
     function _borrow(address who, uint256 amount, uint256 termMonths, uint8 riskTier)
         internal
         returns (uint256 loanId)
     {
-        KreditoVault.CreditAttestation memory att = _att(who, 800, riskTier, block.timestamp + 3650 days);
+        KreditoVault.CreditAttestation memory att = _att(who, 800, riskTier, block.timestamp + 30 days);
         bytes memory sig = _sign(att);
         vm.prank(who);
         loanId = vault.borrow(att, sig, amount, termMonths);
@@ -449,7 +487,7 @@ contract KreditoFullStackTest is Test {
     function test_Default_RevertingInsurer_StillFinalizesViaTryCatch() public {
         // Swap in an insurer that ALWAYS reverts in processClaim. The vault's try/catch must absorb it
         // and finalize the default with recovered == 0 (full bad debt to LPs).
-        RevertingInsurer bad = new RevertingInsurer();
+        RevertingInsurer bad = new RevertingInsurer(address(usdc));
         vault.setInsurancePool(address(bad));
 
         uint256 amount = 100_000 * UNIT;
@@ -635,9 +673,10 @@ contract KreditoFullStackTest is Test {
         usdc.approve(address(ins), type(uint256).max);
         uint256 coverShares = ins.deposit(borrowAmount, borrower);
 
-        // Borrow passes the cover gate against the just-deposited reserves.
+        // Borrow passes the cover gate against the just-deposited reserves. C-1: sign for the FRESH
+        // vault `v` (verifyingContract = address(v)), not the suite's `vault`.
         KreditoVault.CreditAttestation memory att = _att(borrower, 800, 2, block.timestamp + 1 days);
-        bytes memory sig = _sign(att);
+        bytes memory sig = _signFor(address(v), att);
         v.borrow(att, sig, borrowAmount, 12);
 
         // The bypass step: yank the cover back in the same block. Cooldown blocks it.
@@ -693,6 +732,47 @@ contract KreditoFullStackTest is Test {
         vault.setRiskParams(10_001, 0, 0, 0);
         vm.expectRevert(KreditoVault.InvalidParam.selector);
         vault.setRiskParams(0, 0, 0, 10_001);
+    }
+
+    // =====================================================================
+    // M-2 — setInsurancePool asset must match the vault's asset
+    // =====================================================================
+
+    function test_M2_SetInsurancePool_AssetMismatchReverts() public {
+        // A pool over a DIFFERENT asset must be rejected by the vault's setInsurancePool.
+        MockERC20 otherAsset = new MockERC20("Other", "OTHER", 6);
+        KreditoInsurancePool mismatched = new KreditoInsurancePool(IERC20(address(otherAsset)));
+        vm.expectRevert(KreditoVault.AssetMismatch.selector);
+        vault.setInsurancePool(address(mismatched));
+    }
+
+    function test_M2_SetInsurancePool_MatchingAssetSucceeds() public {
+        // A pool over the SAME asset is accepted.
+        KreditoInsurancePool matching = new KreditoInsurancePool(IERC20(address(usdc)));
+        vault.setInsurancePool(address(matching));
+        assertEq(address(vault.insurancePool()), address(matching), "matching-asset pool wired");
+    }
+
+    function test_M2_InsurancePool_SetVaultMirrorRejectsMismatch() public {
+        // The pool's setVault mirror rejects a vault whose asset() differs.
+        MockERC20 otherAsset = new MockERC20("Other", "OTHER", 6);
+        KreditoVault mismatchedVault = new KreditoVault(IERC20(address(otherAsset)), issuer);
+        KreditoInsurancePool pool = new KreditoInsurancePool(IERC20(address(usdc)));
+        vm.expectRevert(KreditoInsurancePool.AssetMismatch.selector);
+        pool.setVault(address(mismatchedVault));
+    }
+
+    // =====================================================================
+    // H-2 — issuer-bound maxPrincipal cap (negative)
+    // =====================================================================
+
+    function test_H2_Borrow_AboveMaxPrincipalReverts() public {
+        // maxPrincipal = LOAN; a LOAN + 1 borrow must revert even though all other gates pass.
+        KreditoVault.CreditAttestation memory att = _att(borrower, 800, 2, block.timestamp + 30 days, LOAN);
+        bytes memory sig = _sign(att);
+        vm.prank(borrower);
+        vm.expectRevert(KreditoVault.AmountExceedsMaxPrincipal.selector);
+        vault.borrow(att, sig, LOAN + 1, 12);
     }
 
     function test_Admin_BorrowTermBounds() public {
@@ -777,8 +857,19 @@ contract KreditoFullStackTest is Test {
 }
 
 /// @dev An insurer whose processClaim always reverts — to prove the vault's try/catch tolerance.
+///      Exposes `asset()` matching the vault's asset so it passes the M-2 `setInsurancePool` check.
 contract RevertingInsurer {
     error Boom();
+
+    address private immutable _asset;
+
+    constructor(address asset_) {
+        _asset = asset_;
+    }
+
+    function asset() external view returns (address) {
+        return _asset;
+    }
 
     function coverRatio(uint256) external pure returns (uint256) {
         return type(uint256).max;

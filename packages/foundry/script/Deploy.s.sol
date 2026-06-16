@@ -3,7 +3,7 @@ pragma solidity ^0.8.19;
 
 import "./DeployHelpers.s.sol";
 import { DeployYourContract } from "./DeployYourContract.s.sol";
-import { DeployKreditoVault } from "./DeployKreditoVault.s.sol";
+import { DeployKreditoFullStack } from "./DeployKreditoFullStack.s.sol";
 
 /**
  * @notice Main deployment script for all contracts
@@ -19,8 +19,9 @@ contract DeployScript is ScaffoldETHDeploy {
         DeployYourContract deployYourContract = new DeployYourContract();
         deployYourContract.run();
 
-        // Kredito credit layer: issuer-signed EIP-712 attestation vault (ENS = identity).
-        DeployKreditoVault deployKreditoVault = new DeployKreditoVault();
-        deployKreditoVault.run();
+        // Kredito lending stack: issuer-signed EIP-712 attestation vault + insurance pool, wired
+        // together (ENS = identity). Supersedes the deprecated KreditoCreditVault deploy.
+        DeployKreditoFullStack deployKreditoFullStack = new DeployKreditoFullStack();
+        deployKreditoFullStack.run();
     }
 }

@@ -70,8 +70,9 @@ contract KreditoController is AccessControl {
         if (issued[node]) revert AlreadyIssued(node);
         issued[node] = true;
 
-        tokenId =
-            subRegistry.register(label, business, IRegistry(address(0)), address(resolver), ownerRoleBitmap, defaultExpiry);
+        tokenId = subRegistry.register(
+            label, business, IRegistry(address(0)), address(resolver), ownerRoleBitmap, defaultExpiry
+        );
         resolver.initIdentity(node, business, "approved", attestationHash);
 
         emit IdentityMinted(node, business, label, tokenId);
