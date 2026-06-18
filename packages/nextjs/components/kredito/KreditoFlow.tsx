@@ -2,8 +2,8 @@
 
 import { useEffect, useState } from "react";
 import { Address as AddressDisplay } from "@scaffold-ui/components";
-import { encodeFunctionData, formatUnits, parseUnits, recoverTypedDataAddress } from "viem";
-import { useReadContract } from "wagmi";
+import { decodeEventLog, encodeFunctionData, formatUnits, parseUnits, recoverTypedDataAddress } from "viem";
+import { usePublicClient, useReadContract } from "wagmi";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -31,14 +31,17 @@ import {
 } from "~~/components/kredito";
 import { RecentChecks } from "~~/components/kredito/RecentChecks";
 import { useKreditoIdentity } from "~~/hooks/scaffold-eth/useKreditoIdentity";
-import { useSmartWalletSign, useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
+import { useSmartWalletAddress, useSmartWalletSign, useSponsoredWrite } from "~~/hooks/scaffold-eth/useSmartWallet";
 import { toTypedMessage, typedData } from "~~/kredito/attestation";
 import { formatUsd } from "~~/kredito/format";
 import { type StoredScore, saveScoreResult, toCertificate, toUiRiskTier } from "~~/kredito/scoreStore";
 import { useKreditoWallet } from "~~/kredito/useWallet";
 import {
   ERC20_ABI,
+  INSURANCE_POOL_ABI,
+  KREDITO_INSURANCE_ADDRESS,
   KREDITO_VAULT_ADDRESS,
+  LOAN_STATUS_LABEL,
   type SignedAttestation,
   VAULT_ABI,
   VAULT_CHAIN_ID,
@@ -138,8 +141,8 @@ const Stepper = ({ current, maxStep, onJump }: { current: number; maxStep: numbe
       const active = i === current;
       const reachable = i <= maxStep;
       const completed = i < current && reachable;
-      // Borrow + Liquidity are gated on the (not-yet-deployed) lending vault — flag them as coming soon.
-      const comingSoon = i >= 4;
+      // Borrow + Liquidity require the deployed lending vault; flag them only when it is unconfigured.
+      const comingSoon = i >= 4 && KREDITO_VAULT_ADDRESS.length === 0;
       return (
         <button
           key={label}
@@ -1605,6 +1608,27 @@ const ProfileSection = ({
   );
 };
 
+// Equal-principal amortization preview (mirrors the vault: principal/term per installment +
+// interest on the OUTSTANDING balance; the final installment clears the remainder).
+const amortizationPreview = (principalUnits: bigint, termMonths: number, annualRateBps: number) => {
+  if (principalUnits <= 0n || termMonths <= 0) return null;
+  const term = BigInt(termMonths);
+  const perInstallment = principalUnits / term;
+  // First installment interest (interest on the full balance) — the headline "≈ /mo".
+  const firstInterest = (principalUnits * BigInt(annualRateBps)) / (10_000n * 12n);
+  const firstPayment = perInstallment + firstInterest;
+  // Total interest across the schedule (sum over a declining balance).
+  let outstanding = principalUnits;
+  let totalInterest = 0n;
+  for (let i = 0; i < termMonths; i++) {
+    const interest = (outstanding * BigInt(annualRateBps)) / (10_000n * 12n);
+    totalInterest += interest;
+    const principalDue = i + 1 >= termMonths || perInstallment > outstanding ? outstanding : perInstallment;
+    outstanding -= principalDue;
+  }
+  return { perInstallment, firstInterest, firstPayment, totalInterest };
+};
+
 const BorrowSection = ({
   result,
   borrower,
@@ -1621,6 +1645,11 @@ const BorrowSection = ({
   const configured = KREDITO_VAULT_ADDRESS.length > 0;
   const vault = configured ? (KREDITO_VAULT_ADDRESS as `0x${string}`) : undefined;
   const { writeContractSponsored, sendCalls } = useSponsoredWrite();
+  // The SMART WALLET is the borrower: it signs the attestation's `borrower` field, receives the
+  // disbursement and pays installments. Reads are scoped to it so balances reflect the smart account.
+  const smartWallet = useSmartWalletAddress();
+  const account = smartWallet ?? (borrower !== ZERO_ADDR ? borrower : undefined);
+  const publicClient = usePublicClient({ chainId: VAULT_CHAIN_ID });
 
   // --- Onchain reads (Sepolia). Disabled until the vault address is configured. ---
   const { data: liquidity, refetch: refetchLiquidity } = useReadContract({
@@ -1644,13 +1673,19 @@ const BorrowSection = ({
     chainId: VAULT_CHAIN_ID,
     query: { enabled: configured },
   });
-  const { data: openLoanId, refetch: refetchOpenLoan } = useReadContract({
+  const { data: minTermData } = useReadContract({
     address: vault,
     abi: VAULT_ABI,
-    functionName: "openLoanOf",
-    args: [borrower],
+    functionName: "MIN_TERM_MONTHS",
     chainId: VAULT_CHAIN_ID,
-    query: { enabled: configured && borrower !== ZERO_ADDR },
+    query: { enabled: configured },
+  });
+  const { data: maxTermData } = useReadContract({
+    address: vault,
+    abi: VAULT_ABI,
+    functionName: "MAX_TERM_MONTHS",
+    chainId: VAULT_CHAIN_ID,
+    query: { enabled: configured },
   });
   const { data: decimalsData } = useReadContract({
     address: assetAddr,
@@ -1666,36 +1701,50 @@ const BorrowSection = ({
     chainId: VAULT_CHAIN_ID,
     query: { enabled: !!assetAddr },
   });
-  const hasOpenLoan = typeof openLoanId === "bigint" && openLoanId !== 0n;
+
+  const dec = typeof decimalsData === "number" ? decimalsData : 6;
+  const sym = typeof symbolData === "string" ? symbolData : "USDC";
+  const liqUnits = typeof liquidity === "bigint" ? liquidity : 0n;
+  const liq = Number(formatUnits(liqUnits, dec));
+  const minScore = result?.minEligibleScore ?? 600;
+  const floor = typeof minScoreData === "bigint" ? Number(minScoreData) : minScore;
+  const minTerm = typeof minTermData === "bigint" ? Number(minTermData) : 6;
+  const maxTerm = typeof maxTermData === "bigint" ? Number(maxTermData) : 36;
+
+  const score = att?.attestation.score ?? result?.combinedScore ?? 0;
+  // The vault locks the APR by attestation riskTier (2/low -> tierToRateBps[1]=10%; 1/medium ->
+  // tierToRateBps[2]=14%). Default rates mirror the vault constructor; the schedule is illustrative.
+  const annualRateBps = att?.attestation.riskTier === 2 ? 1000 : att?.attestation.riskTier === 1 ? 1400 : 0;
+  // The attestation's maxPrincipal is the score-derived credit limit (base units, USDC 6-decimals).
+  const limitUnits = att ? att.attestation.maxPrincipal : 0n;
+  const limitUsd = Number(formatUnits(limitUnits, dec));
+  // Borrowable cap = min(credit limit, idle liquidity).
+  const maxBorrowUnits = limitUnits < liqUnits ? limitUnits : liqUnits;
+  const maxBorrow = Number(formatUnits(maxBorrowUnits, dec));
+
+  const [amount, setAmount] = useState("");
+  const [term, setTerm] = useState(minTerm);
+  const [borrowing, setBorrowing] = useState(false);
+  const [paying, setPaying] = useState(false);
+  const [loanId, setLoanId] = useState<bigint | null>(null);
+  const [loanTx, setLoanTx] = useState<{ hash: string; amount: string } | null>(null);
+  // Expiry uses Date.now() (impure at render) → evaluate it in an effect.
+  const [expired, setExpired] = useState(false);
+
+  // Read the originated loan once we know its id.
   const { data: loanData, refetch: refetchLoan } = useReadContract({
     address: vault,
     abi: VAULT_ABI,
     functionName: "getLoan",
-    args: hasOpenLoan ? [openLoanId] : undefined,
+    args: loanId !== null ? [loanId] : undefined,
     chainId: VAULT_CHAIN_ID,
-    query: { enabled: configured && hasOpenLoan },
+    query: { enabled: configured && loanId !== null },
   });
-
-  const dec = typeof decimalsData === "number" ? decimalsData : 6;
-  const sym = typeof symbolData === "string" ? symbolData : "mUSDC";
-  const liq = typeof liquidity === "bigint" ? Number(formatUnits(liquidity, dec)) : 0;
-  const minScore = result?.minEligibleScore ?? 600;
-  const floor = typeof minScoreData === "bigint" ? Number(minScoreData) : minScore;
   const loan = loanData as VaultLoan | undefined;
 
-  const score = att?.attestation.score ?? result?.combinedScore ?? 0;
-  // The issuer-signed attestation carries the user's requested loan amount as the credit limit
-  // (6-decimal base units where 1 unit == $1). Falls back to 0 until the attestation is signed.
-  const limitUsd = att ? Number(formatUnits(att.attestation.maxPrincipal, dec)) : 0;
-  // 1 token unit (mUSDC) == $1, so borrowable = min(credit limit, pool liquidity).
-  const maxBorrow = Math.max(0, Math.min(limitUsd, liq || limitUsd));
-
-  const [amount, setAmount] = useState("");
-  const [borrowing, setBorrowing] = useState(false);
-  const [repaying, setRepaying] = useState(false);
-  const [loanTx, setLoanTx] = useState<{ hash: string; amount: string } | null>(null);
-  // Expiry uses Date.now() (impure at render) → evaluate it in an effect.
-  const [expired, setExpired] = useState(false);
+  useEffect(() => {
+    setTerm(t => (t < minTerm ? minTerm : t > maxTerm ? maxTerm : t));
+  }, [minTerm, maxTerm]);
 
   useEffect(() => {
     if (maxBorrow > 0) setAmount(a => a || String(Math.floor(maxBorrow)));
@@ -1707,21 +1756,49 @@ const BorrowSection = ({
 
   // Mirrors the vault's isEligible (the contract is the real gate; this drives the UI).
   const eligible = !!att && att.attestation.score >= floor && att.attestation.riskTier !== 0 && !expired;
+  const noLiquidity = configured && liqUnits === 0n;
+
+  // The amount the user typed, in base units (for the preview + the borrow tx).
+  const parsedAmount = (() => {
+    try {
+      return parseUnits((amount || "0").replace(/,/g, ""), dec);
+    } catch {
+      return 0n;
+    }
+  })();
+  const preview = amortizationPreview(parsedAmount, term, annualRateBps);
+
+  // The next installment's amount (principal + interest [+ late fee]) for the approve+pay batch.
+  // We add a small headroom for the optional 5% grace late fee so the approval always covers it.
+  const installmentDue = (() => {
+    if (!loan || loan.principal <= 0n) return 0n;
+    const interest = (loan.principal * loan.annualRateBps) / (10_000n * 12n);
+    const isLast = loan.paymentsMade + 1n >= loan.termMonths || loan.principalPerInstallment > loan.principal;
+    const principalDue = isLast ? loan.principal : loan.principalPerInstallment;
+    const base = principalDue + interest;
+    // Cover a possible 5% late fee (grace) so the single approval never under-approves.
+    return base + (base * 500n) / 10_000n;
+  })();
 
   const doBorrow = async () => {
     if (!vault || !att) {
       notification.error("Sign your credit attestation in the Certificate step first.");
       return;
     }
-    let amt: bigint;
-    try {
-      amt = parseUnits((amount || "0").replace(/,/g, ""), dec);
-    } catch {
-      notification.error("Invalid amount.");
+    if (parsedAmount <= 0n) {
+      notification.error("Enter an amount to borrow.");
       return;
     }
-    if (amt <= 0n) {
-      notification.error("Enter an amount to borrow.");
+    if (parsedAmount > att.attestation.maxPrincipal) {
+      notification.error("Amount exceeds your credit limit.");
+      return;
+    }
+    if (parsedAmount > liqUnits) {
+      notification.error("Amount exceeds available pool liquidity.");
+      return;
+    }
+    if (term < minTerm || term > maxTerm) {
+      notification.error(`Term must be between ${minTerm} and ${maxTerm} months.`);
       return;
     }
     setBorrowing(true);
@@ -1730,12 +1807,32 @@ const BorrowSection = ({
         address: vault,
         abi: VAULT_ABI,
         functionName: "borrow",
-        args: [toTypedMessage(att.attestation), att.signature, amt],
+        args: [toTypedMessage(att.attestation), att.signature, parsedAmount, BigInt(term)],
       });
       setLoanTx({ hash, amount });
       notification.success("Loan disbursed onchain (gas-sponsored)");
+
+      // Recover the loanId from the LoanIssued event in the tx receipt (the borrow return value is
+      // not surfaced by a UserOperation, so decode the emitted event instead).
+      try {
+        const receipt = await publicClient?.waitForTransactionReceipt({ hash });
+        const issued = receipt?.logs
+          .map(log => {
+            try {
+              return decodeEventLog({ abi: VAULT_ABI, data: log.data, topics: log.topics });
+            } catch {
+              return null;
+            }
+          })
+          .find(d => d?.eventName === "LoanIssued");
+        if (issued && "args" in issued) {
+          const id = (issued.args as { loanId: bigint }).loanId;
+          setLoanId(id);
+        }
+      } catch {
+        // Best-effort — the schedule panel just won't auto-show; reads still recover on next render.
+      }
       void refetchLiquidity();
-      void refetchOpenLoan();
     } catch (e) {
       notification.error(getParsedError(e));
     } finally {
@@ -1743,32 +1840,32 @@ const BorrowSection = ({
     }
   };
 
-  const doRepay = async () => {
-    if (!vault || !assetAddr || !loan || typeof openLoanId !== "bigint") return;
-    setRepaying(true);
+  const doPay = async () => {
+    if (!vault || !assetAddr || !loan || loanId === null || installmentDue <= 0n) return;
+    setPaying(true);
     try {
-      // Atomic approve + repay in one sponsored UserOperation.
+      // Atomic approve + makePayment in one sponsored UserOperation.
       const approveData = encodeFunctionData({
         abi: ERC20_ABI,
         functionName: "approve",
-        args: [vault, loan.principal],
+        args: [vault, installmentDue],
       });
-      const repayData = encodeFunctionData({ abi: VAULT_ABI, functionName: "repay", args: [openLoanId] });
+      const payData = encodeFunctionData({ abi: VAULT_ABI, functionName: "makePayment", args: [loanId] });
       await sendCalls([
         { to: assetAddr, data: approveData },
-        { to: vault, data: repayData },
+        { to: vault, data: payData },
       ]);
-      notification.success("Loan repaid — capital returned to the pool");
-      setLoanTx(null);
+      notification.success("Installment paid — principal reduced");
       void refetchLoan();
-      void refetchOpenLoan();
       void refetchLiquidity();
     } catch (e) {
       notification.error(getParsedError(e));
     } finally {
-      setRepaying(false);
+      setPaying(false);
     }
   };
+
+  const hasActiveLoan = !!loan && (loan.status === 1 || loan.status === 2);
 
   return (
     <>
@@ -1776,44 +1873,41 @@ const BorrowSection = ({
         step={5}
         eyebrow="Working-capital loan"
         title="Borrow against your attestation"
-        subtitle="The vault verifies the issuer-signed attestation onchain (recover == issuer, score ≥ minimum, unexpired) and disburses an undercollateralized loan. Gas is sponsored."
+        subtitle="The vault verifies the issuer-signed attestation onchain (recover == issuer, score ≥ minimum, unexpired) and disburses an undercollateralized installment loan. Gas is sponsored."
       />
 
-      {!configured && (
-        <div className="alert alert-info mb-5">
-          <BanknotesIcon className="h-5 w-5 shrink-0" />
-          <div>
-            <p className="font-semibold">Coming soon — lending vault launching</p>
-            <p className="text-sm opacity-80">
-              Borrowing unlocks once the onchain lending vault is live. Your credit identity and attestation are already
-              issued, so you&apos;ll be able to draw against them the moment the vault deploys.
-            </p>
-          </div>
-          <span className="badge badge-info badge-outline">Coming soon</span>
-        </div>
-      )}
-
       {!configured ? (
-        <Panel eyebrow="Onchain" title="Vault not configured">
-          <p className="text-sm text-base-content/70">
-            Deploy the vault and set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to enable onchain borrowing:
-          </p>
-          <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2 mt-2">
-            yarn deploy --file DeployKreditoVault.s.sol --network sepolia
-          </code>
-          <div className="grid sm:grid-cols-3 gap-4 mt-4">
-            <Stat label="Credit limit" value={formatUsd(limitUsd)} />
-            <Stat label="Your score" value={String(score)} />
-            <Stat label="Min score" value={String(minScore)} />
+        <>
+          <div className="alert alert-info mb-5">
+            <BanknotesIcon className="h-5 w-5 shrink-0" />
+            <div>
+              <p className="font-semibold">Lending vault not configured</p>
+              <p className="text-sm opacity-80">
+                Set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to the deployed vault to enable onchain borrowing.
+              </p>
+            </div>
           </div>
-        </Panel>
+          <Panel eyebrow="Onchain" title="Vault not configured">
+            <p className="text-sm text-base-content/70">
+              Deploy the vault and set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to enable onchain borrowing:
+            </p>
+            <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2 mt-2">
+              yarn deploy --file DeployKreditoVaultV2.s.sol --network sepolia
+            </code>
+            <div className="grid sm:grid-cols-3 gap-4 mt-4">
+              <Stat label="Credit limit" value={formatUsd(limitUsd)} />
+              <Stat label="Your score" value={String(score)} />
+              <Stat label="Min score" value={String(minScore)} />
+            </div>
+          </Panel>
+        </>
       ) : (
         <div className="space-y-4">
           <Panel eyebrow="Onchain offer · Sepolia" title="Loan offer">
             <div className="grid sm:grid-cols-4 gap-4">
               <Stat label="Pool liquidity" value={`${formatUsd(liq)} ${sym}`} />
+              <Stat label="Credit limit" value={formatUsd(limitUsd)} />
               <Stat label="Your score" value={String(score)} />
-              <Stat label="Min score (onchain)" value={String(floor)} />
               <div>
                 <p className="k-eyebrow mb-1">Eligibility</p>
                 {att ? (
@@ -1834,55 +1928,148 @@ const BorrowSection = ({
                 Sign your credit attestation in the Certificate step to borrow.
               </div>
             )}
+            {att && noLiquidity && (
+              <div className="rounded-field bg-warning/10 text-warning text-xs px-3 py-2 mt-3">
+                No liquidity yet — supply via the Liquidity step first, then borrow.
+              </div>
+            )}
           </Panel>
 
-          {hasOpenLoan ? (
-            <Panel eyebrow="Active loan" title={`Loan #${String(openLoanId)}`}>
-              <div className="grid sm:grid-cols-2 gap-4">
+          {hasActiveLoan ? (
+            <Panel
+              eyebrow="Active loan"
+              title={`Loan #${loanId !== null ? String(loanId) : "—"}`}
+              action={
+                <span className={`badge ${loan?.status === 2 ? "badge-warning" : "badge-success"}`}>
+                  {LOAN_STATUS_LABEL[loan?.status ?? 1]}
+                </span>
+              }
+            >
+              <div className="grid sm:grid-cols-4 gap-4">
                 <Stat
-                  label="Principal"
+                  label="Outstanding"
                   value={`${formatUsd(loan ? Number(formatUnits(loan.principal, dec)) : 0)} ${sym}`}
                 />
-                <Stat label="Status" value="Active" />
+                <Stat
+                  label="Original"
+                  value={`${formatUsd(loan ? Number(formatUnits(loan.originalPrincipal, dec)) : 0)} ${sym}`}
+                />
+                <Stat
+                  label="Payments"
+                  value={loan ? `${String(loan.paymentsMade)} / ${String(loan.termMonths)}` : "—"}
+                />
+                <Stat label="APR" value={loan ? `${Number(loan.annualRateBps) / 100}%` : "—"} />
               </div>
-              <button className="btn btn-outline btn-sm gap-1 mt-4" onClick={doRepay} disabled={repaying} type="button">
-                {repaying ? (
-                  <>
-                    <span className="loading loading-spinner loading-xs" /> Repaying…
-                  </>
-                ) : (
-                  <>Repay loan</>
-                )}
-              </button>
+              <div className="mt-4 rounded-field border border-base-300 px-4 py-3 flex items-center justify-between gap-3">
+                <div>
+                  <p className="k-eyebrow mb-0.5">Next installment (max)</p>
+                  <p className="k-mono text-lg font-semibold">
+                    {formatUsd(Number(formatUnits(installmentDue, dec)))} {sym}
+                  </p>
+                  <p className="text-xs text-base-content/50">principal + interest (incl. grace late-fee headroom)</p>
+                </div>
+                <button className="btn btn-primary btn-sm gap-1" onClick={doPay} disabled={paying} type="button">
+                  {paying ? (
+                    <>
+                      <span className="loading loading-spinner loading-xs" /> Paying…
+                    </>
+                  ) : (
+                    <>Pay installment (sponsored)</>
+                  )}
+                </button>
+              </div>
               <p className="text-xs text-base-content/50 mt-2">
-                Repay batches approve + repay into one sponsored UserOperation.
+                Pay batches approve + makePayment into one sponsored UserOperation.
               </p>
+              {loanTx && (
+                <a
+                  href={sepoliaTxUrl(loanTx.hash)}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="link k-mono text-xs break-all inline-flex items-center gap-1 mt-2"
+                >
+                  Origination tx <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
+                </a>
+              )}
             </Panel>
           ) : (
             <Panel eyebrow="Draw" title="Borrow">
-              <label className="block">
-                <span className="k-eyebrow">Amount ({sym})</span>
-                <div className="mt-1 flex items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3 focus-within:border-primary transition-colors">
-                  <input
-                    inputMode="decimal"
-                    value={amount}
-                    onChange={e => setAmount(e.target.value)}
-                    placeholder="0"
-                    className="w-full bg-transparent py-2.5 outline-none text-sm k-mono"
-                  />
-                  <button
-                    type="button"
-                    className="text-xs link shrink-0"
-                    onClick={() => setAmount(String(Math.floor(maxBorrow)))}
+              <div className="grid sm:grid-cols-2 gap-4">
+                <label className="block">
+                  <span className="k-eyebrow">Amount ({sym})</span>
+                  <div className="mt-1 flex items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3 focus-within:border-primary transition-colors">
+                    <input
+                      inputMode="decimal"
+                      value={amount}
+                      onChange={e => setAmount(e.target.value)}
+                      placeholder="0"
+                      className="w-full bg-transparent py-2.5 outline-none text-sm k-mono"
+                    />
+                    <button
+                      type="button"
+                      className="text-xs link shrink-0"
+                      onClick={() => setAmount(String(Math.floor(maxBorrow)))}
+                    >
+                      Max {formatUsd(maxBorrow)}
+                    </button>
+                  </div>
+                </label>
+                <label className="block">
+                  <span className="k-eyebrow">
+                    Term — {minTerm}–{maxTerm} months
+                  </span>
+                  <select
+                    value={term}
+                    onChange={e => setTerm(Number(e.target.value))}
+                    className="select select-bordered mt-1 w-full text-sm font-normal"
                   >
-                    Max {formatUsd(maxBorrow)}
-                  </button>
+                    {Array.from({ length: Math.max(0, maxTerm - minTerm + 1) }, (_, i) => minTerm + i).map(m => (
+                      <option key={m} value={m}>
+                        {m} months
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+
+              {preview && (
+                <div className="mt-4 rounded-field border border-base-300 bg-base-200/40 px-4 py-3">
+                  <p className="k-eyebrow mb-2">Amortization preview · equal-principal</p>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                    <div>
+                      <p className="text-xs text-base-content/55">First payment</p>
+                      <p className="k-mono font-semibold">
+                        {formatUsd(Number(formatUnits(preview.firstPayment, dec)))} {sym}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-base-content/55">Principal / mo</p>
+                      <p className="k-mono font-semibold">
+                        {formatUsd(Number(formatUnits(preview.perInstallment, dec)))} {sym}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-base-content/55">APR (locked by tier)</p>
+                      <p className="k-mono font-semibold">{annualRateBps / 100}%</p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-base-content/55">Total interest</p>
+                      <p className="k-mono font-semibold">
+                        {formatUsd(Number(formatUnits(preview.totalInterest, dec)))} {sym}
+                      </p>
+                    </div>
+                  </div>
+                  <p className="text-xs text-base-content/50 mt-2">
+                    Equal principal of {formatUsd(Number(formatUnits(preview.perInstallment, dec)))} {sym} per month
+                    plus interest on the declining balance; the final installment clears the remainder.
+                  </p>
                 </div>
-              </label>
+              )}
+
               <button
                 className="btn btn-primary btn-sm w-full gap-1 mt-3"
                 onClick={doBorrow}
-                disabled={borrowing || !att || !eligible}
+                disabled={borrowing || !att || !eligible || noLiquidity || parsedAmount <= 0n}
                 type="button"
               >
                 {borrowing ? (
@@ -1895,6 +2082,11 @@ const BorrowSection = ({
                   </>
                 )}
               </button>
+              {account && (
+                <p className="text-xs text-base-content/45 mt-2">
+                  Disbursed to your smart wallet <span className="k-mono">{account}</span>.
+                </p>
+              )}
               {loanTx && (
                 <div className="mt-3 space-y-1">
                   <div className="flex items-center gap-2 text-success text-sm font-medium">
@@ -1920,14 +2112,9 @@ const BorrowSection = ({
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
           <ArrowLeftIcon className="h-4 w-4" /> Back
         </button>
-        <div className="flex flex-col items-end gap-1">
-          <button className="btn btn-outline gap-1" onClick={onNext} type="button">
-            Preview liquidity <ArrowRightIcon className="h-4 w-4" />
-          </button>
-          {!configured && (
-            <span className="text-xs text-base-content/45">Borrowing launches when the lending vault goes live.</span>
-          )}
-        </div>
+        <button className="btn btn-outline gap-1" onClick={onNext} type="button">
+          Go to liquidity <ArrowRightIcon className="h-4 w-4" />
+        </button>
       </div>
     </>
   );
@@ -1936,8 +2123,15 @@ const BorrowSection = ({
 const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBack: () => void }) => {
   const configured = KREDITO_VAULT_ADDRESS.length > 0;
   const vault = configured ? (KREDITO_VAULT_ADDRESS as `0x${string}`) : undefined;
-  const hasLp = configured && borrower !== ZERO_ADDR;
+  const insuranceConfigured = KREDITO_INSURANCE_ADDRESS.length > 0;
+  const insurance = insuranceConfigured ? (KREDITO_INSURANCE_ADDRESS as `0x${string}`) : undefined;
   const { writeContractSponsored, sendCalls } = useSponsoredWrite();
+
+  // The connected SMART WALLET is the LP: it holds the USDC, receives shares, and is the redeem
+  // controller. All position reads are scoped to it (not the embedded EOA).
+  const smartWallet = useSmartWalletAddress();
+  const lp = smartWallet ?? (borrower !== ZERO_ADDR ? borrower : undefined);
+  const hasLp = configured && !!lp;
 
   const read = { address: vault, abi: VAULT_ABI, chainId: VAULT_CHAIN_ID } as const;
 
@@ -1956,11 +2150,12 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
     chainId: VAULT_CHAIN_ID,
     query: { enabled: !!assetAddr },
   });
+  // The smart wallet's USDC balance — it MUST hold USDC to supply.
   const { data: walletBal, refetch: refetchWallet } = useReadContract({
     address: assetAddr,
     abi: ERC20_ABI,
     functionName: "balanceOf",
-    args: [borrower],
+    args: lp ? [lp] : undefined,
     chainId: VAULT_CHAIN_ID,
     query: { enabled: !!assetAddr && hasLp },
   });
@@ -1978,7 +2173,7 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
   const { data: shares, refetch: refetchShares } = useReadContract({
     ...read,
     functionName: "balanceOf",
-    args: [borrower],
+    args: lp ? [lp] : undefined,
     query: { enabled: hasLp },
   });
   const { data: positionValue } = useReadContract({
@@ -1990,13 +2185,13 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
   const { data: pendingShares, refetch: refetchPending } = useReadContract({
     ...read,
     functionName: "pendingRedeemRequest",
-    args: [0n, borrower],
+    args: lp ? [0n, lp] : undefined,
     query: { enabled: hasLp },
   });
   const { data: claimableShares, refetch: refetchClaimable } = useReadContract({
     ...read,
     functionName: "claimableRedeemRequest",
-    args: [0n, borrower],
+    args: lp ? [0n, lp] : undefined,
     query: { enabled: hasLp },
   });
   const { data: pendingValue } = useReadContract({
@@ -2013,18 +2208,87 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
   });
   const { data: vaultOwner } = useReadContract({ ...read, functionName: "owner", query: { enabled: configured } });
 
+  // --- Insurance (COVER) pool reads ---
+  const insRead = { address: insurance, abi: INSURANCE_POOL_ABI, chainId: VAULT_CHAIN_ID } as const;
+  const { data: insTvl, refetch: refetchInsTvl } = useReadContract({
+    ...insRead,
+    functionName: "totalAssets",
+    query: { enabled: insuranceConfigured },
+  });
+  const { data: insShares, refetch: refetchInsShares } = useReadContract({
+    ...insRead,
+    functionName: "balanceOf",
+    args: lp ? [lp] : undefined,
+    query: { enabled: insuranceConfigured && hasLp },
+  });
+  const { data: insPosition } = useReadContract({
+    ...insRead,
+    functionName: "convertToAssets",
+    args: [typeof insShares === "bigint" ? insShares : 0n],
+    query: { enabled: insuranceConfigured && hasLp && typeof insShares === "bigint" && insShares > 0n },
+  });
+  const { data: insCooldown } = useReadContract({
+    ...insRead,
+    functionName: "redeemCooldown",
+    query: { enabled: insuranceConfigured },
+  });
+  const { data: insLastDeposit, refetch: refetchInsLast } = useReadContract({
+    ...insRead,
+    functionName: "lastDepositAt",
+    args: lp ? [lp] : undefined,
+    query: { enabled: insuranceConfigured && hasLp },
+  });
+
   const dec = typeof decimalsData === "number" ? decimalsData : 6;
-  const sym = typeof symbolData === "string" ? symbolData : "mUSDC";
+  const sym = typeof symbolData === "string" ? symbolData : "USDC";
   const usd = (v: unknown) => formatUsd(typeof v === "bigint" ? Number(formatUnits(v, dec)) : 0);
   const sharesBig = typeof shares === "bigint" ? shares : 0n;
   const positionBig = typeof positionValue === "bigint" ? positionValue : 0n;
   const pendingBig = typeof pendingShares === "bigint" ? pendingShares : 0n;
   const claimableBig = typeof claimableShares === "bigint" ? claimableShares : 0n;
-  const isOwner = !!vaultOwner && String(vaultOwner).toLowerCase() === borrower.toLowerCase();
+  const walletBalBig = typeof walletBal === "bigint" ? walletBal : 0n;
+  const insSharesBig = typeof insShares === "bigint" ? insShares : 0n;
+  const insPositionBig = typeof insPosition === "bigint" ? insPosition : 0n;
+  const isOwner = !!vaultOwner && !!lp && String(vaultOwner).toLowerCase() === lp.toLowerCase();
 
   const [amount, setAmount] = useState("");
   const [redeemAmount, setRedeemAmount] = useState("");
-  const [busy, setBusy] = useState<"" | "supply" | "request" | "cancel" | "claim" | "fulfill">("");
+  const [insAmount, setInsAmount] = useState("");
+  const [busy, setBusy] = useState<
+    "" | "supply" | "request" | "cancel" | "claim" | "fulfill" | "insSupply" | "insRedeem"
+  >("");
+
+  // Insurance cooldown: a withdraw is gated until lastDepositAt + redeemCooldown. Compute remaining
+  // seconds in an effect (Date.now is impure at render).
+  const [insUnlockIn, setInsUnlockIn] = useState(0);
+  useEffect(() => {
+    const last = typeof insLastDeposit === "bigint" ? Number(insLastDeposit) : 0;
+    const cd = typeof insCooldown === "bigint" ? Number(insCooldown) : 0;
+    const tick = () => setInsUnlockIn(Math.max(0, last + cd - Math.floor(Date.now() / 1000)));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, [insLastDeposit, insCooldown]);
+  const insLocked = insUnlockIn > 0 && insSharesBig > 0n;
+
+  // Parsed supply input (base units) for the balance gate.
+  const parsedSupply = (() => {
+    try {
+      return parseUnits((amount || "0").replace(/,/g, ""), dec);
+    } catch {
+      return 0n;
+    }
+  })();
+  const insufficientForSupply = parsedSupply > walletBalBig;
+
+  const parsedInsSupply = (() => {
+    try {
+      return parseUnits((insAmount || "0").replace(/,/g, ""), dec);
+    } catch {
+      return 0n;
+    }
+  })();
+  const insufficientForInsSupply = parsedInsSupply > walletBalBig;
 
   const refetchAll = () => {
     void refetchWallet();
@@ -2033,32 +2297,98 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
     void refetchShares();
     void refetchPending();
     void refetchClaimable();
+    void refetchInsTvl();
+    void refetchInsShares();
+    void refetchInsLast();
+  };
+
+  const copyAddr = () => {
+    if (!lp) return;
+    navigator.clipboard?.writeText(lp);
+    notification.success("Smart wallet address copied");
   };
 
   const supply = async () => {
-    if (!vault || !assetAddr) return;
-    let amt: bigint;
-    try {
-      amt = parseUnits((amount || "0").replace(/,/g, ""), dec);
-    } catch {
-      notification.error("Invalid amount.");
+    if (!vault || !assetAddr || !lp) return;
+    if (parsedSupply <= 0n) {
+      notification.error("Enter an amount to supply.");
       return;
     }
-    if (amt <= 0n) {
-      notification.error("Enter an amount to supply.");
+    if (insufficientForSupply) {
+      notification.error(`Smart wallet holds only ${usd(walletBalBig)} ${sym}. Send more USDC to it first.`);
       return;
     }
     setBusy("supply");
     try {
       // Atomic approve + deposit in one sponsored UserOperation (ERC-4626 sync deposit).
-      const approveData = encodeFunctionData({ abi: ERC20_ABI, functionName: "approve", args: [vault, amt] });
-      const depositData = encodeFunctionData({ abi: VAULT_ABI, functionName: "deposit", args: [amt, borrower] });
+      const approveData = encodeFunctionData({ abi: ERC20_ABI, functionName: "approve", args: [vault, parsedSupply] });
+      const depositData = encodeFunctionData({ abi: VAULT_ABI, functionName: "deposit", args: [parsedSupply, lp] });
       await sendCalls([
         { to: assetAddr, data: approveData },
         { to: vault, data: depositData },
       ]);
-      notification.success(`Supplied ${amount} ${sym} to the vault`);
+      notification.success(`Supplied ${amount} ${sym} to the lending vault`);
       setAmount("");
+      refetchAll();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  const supplyInsurance = async () => {
+    if (!insurance || !assetAddr || !lp) return;
+    if (parsedInsSupply <= 0n) {
+      notification.error("Enter an amount to supply.");
+      return;
+    }
+    if (insufficientForInsSupply) {
+      notification.error(`Smart wallet holds only ${usd(walletBalBig)} ${sym}. Send more USDC to it first.`);
+      return;
+    }
+    setBusy("insSupply");
+    try {
+      const approveData = encodeFunctionData({
+        abi: ERC20_ABI,
+        functionName: "approve",
+        args: [insurance, parsedInsSupply],
+      });
+      const depositData = encodeFunctionData({
+        abi: INSURANCE_POOL_ABI,
+        functionName: "deposit",
+        args: [parsedInsSupply, lp],
+      });
+      await sendCalls([
+        { to: assetAddr, data: approveData },
+        { to: insurance, data: depositData },
+      ]);
+      notification.success(`Backed the pool with ${insAmount} ${sym} (COVER)`);
+      setInsAmount("");
+      refetchAll();
+    } catch (e) {
+      notification.error(getParsedError(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  // Insurance redeem is SYNCHRONOUS (reserves are never lent out) but cooldown-gated.
+  const redeemInsurance = async () => {
+    if (!insurance || !lp || insSharesBig <= 0n) return;
+    if (insLocked) {
+      notification.error("COVER is still in its redeem cooldown.");
+      return;
+    }
+    setBusy("insRedeem");
+    try {
+      await writeContractSponsored({
+        address: insurance,
+        abi: INSURANCE_POOL_ABI,
+        functionName: "redeem",
+        args: [insSharesBig, lp, lp],
+      });
+      notification.success("COVER redeemed — reserves returned to your wallet");
       refetchAll();
     } catch (e) {
       notification.error(getParsedError(e));
@@ -2069,7 +2399,7 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
 
   // Async redeem: requestRedeem escrows shares; the keeper fulfills as liquidity frees; then claim.
   const requestRedeem = async () => {
-    if (!vault || positionBig <= 0n || sharesBig <= 0n) return;
+    if (!vault || !lp || positionBig <= 0n || sharesBig <= 0n) return;
     // Convert the asset-denominated input to shares pro-rata (blank = full position).
     let reqShares = sharesBig;
     const trimmed = (redeemAmount || "").replace(/,/g, "").trim();
@@ -2094,7 +2424,7 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
         address: vault,
         abi: VAULT_ABI,
         functionName: "requestRedeem",
-        args: [reqShares, borrower, borrower],
+        args: [reqShares, lp, lp],
       });
       notification.success("Redeem requested — awaiting keeper fulfillment");
       setRedeemAmount("");
@@ -2107,14 +2437,14 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
   };
 
   const cancelRedeem = async () => {
-    if (!vault || pendingBig <= 0n) return;
+    if (!vault || !lp || pendingBig <= 0n) return;
     setBusy("cancel");
     try {
       await writeContractSponsored({
         address: vault,
         abi: VAULT_ABI,
         functionName: "cancelRedeemRequest",
-        args: [pendingBig, borrower],
+        args: [pendingBig, lp],
       });
       notification.success("Pending redeem cancelled — shares returned");
       refetchAll();
@@ -2126,14 +2456,14 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
   };
 
   const claimRedeem = async () => {
-    if (!vault || claimableBig <= 0n) return;
+    if (!vault || !lp || claimableBig <= 0n) return;
     setBusy("claim");
     try {
       await writeContractSponsored({
         address: vault,
         abi: VAULT_ABI,
         functionName: "redeem",
-        args: [claimableBig, borrower, borrower],
+        args: [claimableBig, lp, lp],
       });
       notification.success("Claimed — assets returned to your wallet");
       refetchAll();
@@ -2146,14 +2476,14 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
 
   // Keeper/owner action: move a controller's pending redeem to claimable (locks rate, reserves assets).
   const fulfill = async () => {
-    if (!vault || pendingBig <= 0n) return;
+    if (!vault || !lp || pendingBig <= 0n) return;
     setBusy("fulfill");
     try {
       await writeContractSponsored({
         address: vault,
         abi: VAULT_ABI,
         functionName: "fulfillRedeem",
-        args: [borrower, pendingBig],
+        args: [lp, pendingBig],
       });
       notification.success("Redeem fulfilled — now claimable");
       refetchAll();
@@ -2169,35 +2499,64 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
       <PageHeader
         step={6}
         eyebrow="Liquidity · ERC-4626 + ERC-7540"
-        title="Provide liquidity to the vault"
-        subtitle="LPs supply the asset and receive vault shares (ERC-4626). Because capital is lent out, redemptions are asynchronous (ERC-7540): request → the keeper fulfills as liquidity frees → claim. Gas is sponsored."
+        title="Provide liquidity to the lending stack"
+        subtitle="LPs supply USDC to the lending vault (ERC-4626) and earn borrower interest; redemptions are asynchronous (ERC-7540): request → the keeper fulfills as liquidity frees → claim. COVER LPs back the pool against defaults and can exit synchronously after a short cooldown. Gas is sponsored."
       />
 
-      {!configured && (
-        <div className="alert alert-info mb-5">
-          <BanknotesIcon className="h-5 w-5 shrink-0" />
-          <div>
-            <p className="font-semibold">Coming soon — lending vault launching</p>
-            <p className="text-sm opacity-80">
-              Liquidity provision unlocks once the onchain lending vault is live. LPs will supply assets and earn yield
-              from borrower interest the moment the vault deploys.
-            </p>
-          </div>
-          <span className="badge badge-info badge-outline">Coming soon</span>
-        </div>
-      )}
-
       {!configured ? (
-        <Panel eyebrow="Onchain" title="Vault not configured">
-          <p className="text-sm text-base-content/70">
-            Deploy the vault and set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to enable liquidity provision:
-          </p>
-          <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2 mt-2">
-            yarn deploy --file DeployKreditoVaultV2.s.sol --network sepolia
-          </code>
-        </Panel>
+        <>
+          <div className="alert alert-info mb-5">
+            <BanknotesIcon className="h-5 w-5 shrink-0" />
+            <div>
+              <p className="font-semibold">Lending vault not configured</p>
+              <p className="text-sm opacity-80">
+                Set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to the deployed vault to enable liquidity provision.
+              </p>
+            </div>
+          </div>
+          <Panel eyebrow="Onchain" title="Vault not configured">
+            <p className="text-sm text-base-content/70">
+              Deploy the vault and set <code>NEXT_PUBLIC_KREDITO_VAULT</code> to enable liquidity provision:
+            </p>
+            <code className="k-mono text-xs break-all block bg-base-200 rounded-field p-2 mt-2">
+              yarn deploy --file DeployKreditoVaultV2.s.sol --network sepolia
+            </code>
+          </Panel>
+        </>
       ) : (
         <div className="space-y-4">
+          {/* SMART-WALLET FUNDING — the vault is unseeded; this wallet must HOLD USDC to supply. */}
+          <Panel eyebrow="Your smart wallet" title="Fund this address to supply liquidity">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+              <div className="min-w-0">
+                <p className="k-eyebrow mb-1">Smart wallet (LP)</p>
+                <div className="flex items-center gap-2">
+                  {lp ? (
+                    <>
+                      <code className="k-mono text-sm break-all">{lp}</code>
+                      <button type="button" onClick={copyAddr} className="btn btn-ghost btn-xs gap-1 shrink-0">
+                        <DocumentDuplicateIcon className="h-3.5 w-3.5" /> Copy
+                      </button>
+                    </>
+                  ) : (
+                    <span className="text-sm text-base-content/60">Log in to create your smart wallet.</span>
+                  )}
+                </div>
+              </div>
+              <div className="sm:text-right shrink-0">
+                <p className="k-eyebrow mb-1">USDC balance</p>
+                <p className="k-mono text-2xl font-semibold">
+                  {usd(walletBalBig)} {sym}
+                </p>
+              </div>
+            </div>
+            <p className="text-xs text-base-content/55 mt-3">
+              Send Sepolia {sym} to this address to supply liquidity. Supply is disabled when the amount exceeds this
+              balance. Gas for supply/redeem is sponsored.
+            </p>
+          </Panel>
+
+          {/* Pool stats */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <div className="k-card p-5">
               <p className="k-eyebrow mb-1">Total assets</p>
@@ -2212,17 +2571,23 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
               <p className="k-mono text-2xl font-semibold">{usd(lent)}</p>
             </div>
             <div className="k-card p-5">
-              <p className="k-eyebrow mb-1">Your position</p>
+              <p className="k-eyebrow mb-1">Your vault position</p>
               <p className="k-mono text-2xl font-semibold">{usd(positionBig)}</p>
             </div>
           </div>
 
           <div className="grid lg:grid-cols-2 gap-4 items-start">
-            {/* Supply */}
-            <Panel eyebrow="Supply · ERC-4626" title="Provide liquidity">
+            {/* Supply to the lending vault */}
+            <Panel eyebrow="Supply · ERC-4626" title="Supply to the lending vault">
               <label className="block">
                 <span className="k-eyebrow">Amount ({sym})</span>
-                <div className="mt-1 flex items-center gap-2 rounded-field border border-base-300 bg-base-100 px-3 focus-within:border-primary transition-colors">
+                <div
+                  className={`mt-1 flex items-center gap-2 rounded-field border bg-base-100 px-3 transition-colors ${
+                    insufficientForSupply
+                      ? "border-error focus-within:border-error"
+                      : "border-base-300 focus-within:border-primary"
+                  }`}
+                >
                   <input
                     inputMode="decimal"
                     value={amount}
@@ -2233,16 +2598,19 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
                   <button
                     type="button"
                     className="text-xs link shrink-0"
-                    onClick={() => setAmount(typeof walletBal === "bigint" ? formatUnits(walletBal, dec) : "")}
+                    onClick={() => setAmount(walletBalBig > 0n ? formatUnits(walletBalBig, dec) : "")}
                   >
-                    Max {usd(walletBal)}
+                    Max {usd(walletBalBig)}
                   </button>
                 </div>
               </label>
+              {insufficientForSupply && (
+                <p className="text-xs text-error mt-1">Exceeds your smart wallet&apos;s {sym} balance.</p>
+              )}
               <button
                 className="btn btn-primary btn-sm w-full gap-1 mt-3"
                 onClick={supply}
-                disabled={busy !== "" || !hasLp}
+                disabled={busy !== "" || !hasLp || parsedSupply <= 0n || insufficientForSupply}
                 type="button"
               >
                 {busy === "supply" ? (
@@ -2258,8 +2626,8 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
               <p className="text-xs text-base-content/50 mt-2">Batches approve + deposit into one sponsored call.</p>
             </Panel>
 
-            {/* Async redeem */}
-            <Panel eyebrow="Redeem · ERC-7540 async" title="Withdraw liquidity">
+            {/* Async redeem from the lending vault */}
+            <Panel eyebrow="Redeem · ERC-7540 async" title="Withdraw from the lending vault">
               {claimableBig > 0n && (
                 <div className="rounded-field bg-success/10 px-3 py-2 mb-3">
                   <p className="text-sm font-medium text-success">Claimable: {usd(claimableValue)}</p>
@@ -2362,6 +2730,125 @@ const LiquiditySection = ({ borrower, onBack }: { borrower: `0x${string}`; onBac
               )}
             </Panel>
           </div>
+
+          {/* INSURANCE / COVER pool — back the lending vault against defaults */}
+          <Panel
+            eyebrow="Insurance · COVER · ERC-4626"
+            title="Back the pool (insurance)"
+            action={
+              insuranceConfigured ? (
+                <span className="badge badge-ghost gap-1">
+                  <ShieldCheckIcon className="h-3.5 w-3.5" /> Reserve TVL {usd(insTvl)}
+                </span>
+              ) : null
+            }
+          >
+            {!insuranceConfigured ? (
+              <p className="text-sm text-base-content/65">
+                Set <code>NEXT_PUBLIC_KREDITO_INSURANCE</code> to enable the COVER reserve pool.
+              </p>
+            ) : (
+              <div className="grid lg:grid-cols-2 gap-4 items-start">
+                {/* COVER supply */}
+                <div>
+                  <div className="grid grid-cols-2 gap-3 mb-3">
+                    <div>
+                      <p className="k-eyebrow mb-0.5">Reserve TVL</p>
+                      <p className="k-mono text-lg font-semibold">{usd(insTvl)}</p>
+                    </div>
+                    <div>
+                      <p className="k-eyebrow mb-0.5">Your COVER</p>
+                      <p className="k-mono text-lg font-semibold">{usd(insPositionBig)}</p>
+                    </div>
+                  </div>
+                  <label className="block">
+                    <span className="k-eyebrow">Amount ({sym})</span>
+                    <div
+                      className={`mt-1 flex items-center gap-2 rounded-field border bg-base-100 px-3 transition-colors ${
+                        insufficientForInsSupply
+                          ? "border-error focus-within:border-error"
+                          : "border-base-300 focus-within:border-primary"
+                      }`}
+                    >
+                      <input
+                        inputMode="decimal"
+                        value={insAmount}
+                        onChange={e => setInsAmount(e.target.value)}
+                        placeholder="0"
+                        className="w-full bg-transparent py-2.5 outline-none text-sm k-mono"
+                      />
+                      <button
+                        type="button"
+                        className="text-xs link shrink-0"
+                        onClick={() => setInsAmount(walletBalBig > 0n ? formatUnits(walletBalBig, dec) : "")}
+                      >
+                        Max {usd(walletBalBig)}
+                      </button>
+                    </div>
+                  </label>
+                  {insufficientForInsSupply && (
+                    <p className="text-xs text-error mt-1">Exceeds your smart wallet&apos;s {sym} balance.</p>
+                  )}
+                  <button
+                    className="btn btn-primary btn-sm w-full gap-1 mt-3"
+                    onClick={supplyInsurance}
+                    disabled={busy !== "" || !hasLp || parsedInsSupply <= 0n || insufficientForInsSupply}
+                    type="button"
+                  >
+                    {busy === "insSupply" ? (
+                      <>
+                        <span className="loading loading-spinner loading-xs" /> Supplying…
+                      </>
+                    ) : (
+                      <>
+                        <ShieldCheckIcon className="h-4 w-4" /> Back the pool (sponsored)
+                      </>
+                    )}
+                  </button>
+                  <p className="text-xs text-base-content/50 mt-2">
+                    COVER LPs earn the streamed protocol fee and absorb default losses first. Batches approve + deposit.
+                  </p>
+                </div>
+
+                {/* COVER redeem (synchronous, cooldown-gated) */}
+                <div>
+                  <p className="k-eyebrow mb-1">Redeem COVER</p>
+                  {insSharesBig <= 0n ? (
+                    <p className="text-sm text-base-content/60">You have no COVER position yet.</p>
+                  ) : insLocked ? (
+                    <div className="rounded-field bg-warning/10 px-3 py-2">
+                      <p className="text-sm font-medium text-warning">Cooldown active</p>
+                      <p className="text-xs text-base-content/60 mt-0.5">
+                        COVER unlocks in {Math.floor(insUnlockIn / 60)}m {insUnlockIn % 60}s. Reserves can only be
+                        pulled after the redeem cooldown since your last deposit.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="rounded-field border border-base-300 px-3 py-2 flex items-center justify-between gap-3">
+                      <div>
+                        <p className="text-sm font-medium">{usd(insPositionBig)}</p>
+                        <p className="text-xs text-base-content/55">synchronous · returned to your wallet</p>
+                      </div>
+                      <button
+                        className="btn btn-outline btn-sm"
+                        onClick={redeemInsurance}
+                        disabled={busy !== ""}
+                        type="button"
+                      >
+                        {busy === "insRedeem" ? (
+                          <>
+                            <span className="loading loading-spinner loading-xs" /> Redeeming…
+                          </>
+                        ) : (
+                          <>Redeem all</>
+                        )}
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+          </Panel>
         </div>
       )}
 
