@@ -6,7 +6,7 @@ import { KreditoIdentityCard, PageHeader } from "~~/components/kredito";
 import { BorrowSection } from "~~/components/kredito/BorrowSection";
 import { CertificateSection } from "~~/components/kredito/CertificateSection";
 import { EvaluationsSection } from "~~/components/kredito/EvaluationsSection";
-import { LiquiditySection } from "~~/components/kredito/LiquiditySection";
+import { LiquidityDashboard } from "~~/components/kredito/LiquidityDashboard";
 import { ProfileSection } from "~~/components/kredito/ProfileSection";
 import { ZERO_ADDR } from "~~/components/kredito/flowBits";
 import type { StoredScore } from "~~/kredito/scoreStore";
@@ -253,7 +253,7 @@ export const Dashboard = ({ identity }: { identity: EnsIdentity }) => {
 
       {tab === "profile" && <ProfileSection borrower={borrower} mintedLabel={identity.label} embedded />}
 
-      {tab === "liquidity" && <LiquiditySection borrower={borrower} embedded />}
+      {tab === "liquidity" && <LiquidityDashboard borrower={borrower} embedded />}
     </div>
   );
 };

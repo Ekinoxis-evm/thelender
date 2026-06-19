@@ -13,3 +13,5 @@ export { KreditoIdentityCard, IdentityChip } from "./KreditoIdentityCard";
 export type { IdentityCardData } from "./KreditoIdentityCard";
 export { Dashboard } from "./Dashboard";
 export { EvaluationFlow } from "./EvaluationFlow";
+export { LiquidityDashboard } from "./LiquidityDashboard";
+export { RoleHome, OpenLiquidity } from "./RoleHome";

@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePrivy } from "@privy-io/react-auth";
 import type { NextPage } from "next";
-import { LiquiditySection } from "~~/components/kredito/LiquiditySection";
-import { ZERO_ADDR } from "~~/components/kredito/flowBits";
+import { OpenLiquidity } from "~~/components/kredito/RoleHome";
 import { useKreditoWallet } from "~~/kredito/useWallet";
 
 const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
@@ -42,11 +41,7 @@ const Inner = () => {
     );
   }
 
-  return (
-    <div className="mx-auto max-w-6xl px-4 sm:px-5 py-8 w-full">
-      <LiquiditySection borrower={(address ?? ZERO_ADDR) as `0x${string}`} embedded />
-    </div>
-  );
+  return <OpenLiquidity address={address as `0x${string}` | undefined} />;
 };
 
 const Spinner = () => (
