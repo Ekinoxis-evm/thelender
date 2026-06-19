@@ -13,6 +13,8 @@ import type { SignedAttestation } from "~~/kredito/vault";
 // The three evaluation steps a wallet WITHOUT an identity walks to mint one.
 const EVAL_STEPS = ["Onboarding", "Score", "Certificate"] as const;
 
+// Gated wizard progress — numbered + connected steps with completion checkmarks. Visually distinct
+// from the Dashboard's flat free-jump tab row so users can tell this is a sequential, gated flow.
 const EvalStepper = ({
   current,
   maxStep,
@@ -22,36 +24,48 @@ const EvalStepper = ({
   maxStep: number;
   onJump: (i: number) => void;
 }) => (
-  <div className="k-card p-2 mb-6 flex items-center gap-1 overflow-x-auto">
-    {EVAL_STEPS.map((label, i) => {
-      const active = i === current;
-      const reachable = i <= maxStep;
-      const completed = i < current && reachable;
-      return (
-        <button
-          key={label}
-          type="button"
-          disabled={!reachable}
-          onClick={() => onJump(i)}
-          className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm whitespace-nowrap transition-colors ${
-            active
-              ? "bg-primary text-primary-content"
-              : reachable
-                ? "hover:bg-base-200 text-base-content/80"
-                : "opacity-40 cursor-not-allowed"
-          }`}
-        >
-          <span
-            className={`grid place-items-center h-5 w-5 rounded-full text-xs ${
-              active ? "bg-primary-content/20" : completed ? "bg-success text-success-content" : "bg-base-300"
-            }`}
-          >
-            {completed ? <CheckIcon className="h-3 w-3" /> : i + 1}
-          </span>
-          {label}
-        </button>
-      );
-    })}
+  <div className="k-card p-3 mb-6 relative">
+    <div className="flex items-center overflow-x-auto">
+      {EVAL_STEPS.map((label, i) => {
+        const active = i === current;
+        const reachable = i <= maxStep;
+        const completed = i < current && reachable;
+        return (
+          <div key={label} className="flex items-center shrink-0">
+            <button
+              type="button"
+              disabled={!reachable}
+              onClick={() => onJump(i)}
+              aria-current={active ? "step" : undefined}
+              className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm whitespace-nowrap transition-colors ${
+                active
+                  ? "bg-primary text-primary-content"
+                  : reachable
+                    ? "hover:bg-base-200 text-base-content/80"
+                    : "opacity-40 cursor-not-allowed"
+              }`}
+            >
+              <span
+                className={`grid place-items-center h-5 w-5 rounded-full text-xs tabular-nums ${
+                  active ? "bg-primary-content/20" : completed ? "bg-success text-success-content" : "bg-base-300"
+                }`}
+              >
+                {completed ? <CheckIcon className="h-3 w-3" aria-hidden="true" /> : i + 1}
+              </span>
+              {label}
+            </button>
+            {i < EVAL_STEPS.length - 1 && (
+              <span
+                aria-hidden="true"
+                className={`mx-1 h-px w-6 shrink-0 ${i < current ? "bg-success" : "bg-base-300"}`}
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+    {/* fade cue that more steps exist when the row scrolls on small screens */}
+    <div className="pointer-events-none absolute inset-y-3 right-3 w-8 bg-gradient-to-l from-base-100 to-transparent rounded-r-lg sm:hidden" />
   </div>
 );
 

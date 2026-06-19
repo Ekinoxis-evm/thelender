@@ -30,10 +30,10 @@ export const FLOW: FlowStep[] = [
   {
     key: "certificate",
     step: 3,
-    label: "Certificate",
+    label: "Credit identity",
     href: "/certificate",
-    tagline: "Soulbound credit NFT",
-    summary: "An updateable Credit Certificate is minted as a soulbound NFT, gated by your ENS identity.",
+    tagline: "Your .kredito.eth name",
+    summary: "If eligible, you mint a verifiable <name>.kredito.eth ENS credit identity that carries your score.",
   },
   {
     key: "borrow",
@@ -41,7 +41,7 @@ export const FLOW: FlowStep[] = [
     label: "Borrow",
     href: "/borrow",
     tagline: "Undercollateralized loan",
-    summary: "The vault checks the certificate and ENS gate, then pays out a working-capital loan.",
+    summary: "The vault verifies your ENS identity and a signed attestation, then pays out a working-capital loan.",
   },
   {
     key: "liquidity",
@@ -54,7 +54,3 @@ export const FLOW: FlowStep[] = [
 ];
 
 export const flowByKey = (key: string) => FLOW.find(s => s.key === key);
-export const nextStep = (key: string) => {
-  const i = FLOW.findIndex(s => s.key === key);
-  return i >= 0 && i < FLOW.length - 1 ? FLOW[i + 1] : undefined;
-};

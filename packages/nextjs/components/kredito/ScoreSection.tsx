@@ -10,6 +10,7 @@ import {
 import { HashChip, PageHeader, Panel, RiskBadge, ScoreMeter, SignalRow } from "~~/components/kredito";
 import { BAND_BADGE, DECISION_BADGE, DECISION_LABEL, SIGNAL_BADGE } from "~~/components/kredito/flowBits";
 import { type StoredScore, toUiRiskTier } from "~~/kredito/scoreStore";
+import { MIN_ELIGIBLE_SCORE } from "~~/services/lendsignal/score";
 import { notification } from "~~/utils/scaffold-eth";
 
 export const ScoreSection = ({
@@ -23,6 +24,8 @@ export const ScoreSection = ({
 }) => {
   const ai = result.scoreInputs.confidentialAiScore;
   const tokens = result.usage ? result.usage.prompt_tokens + result.usage.completion_tokens : undefined;
+  // Single source of truth for the eligibility threshold across every screen.
+  const minScore = MIN_ELIGIBLE_SCORE;
   const copyId = () => {
     navigator.clipboard?.writeText(result.inferenceId);
     notification.success("Chainlink request ID copied");
@@ -43,7 +46,7 @@ export const ScoreSection = ({
           action={
             result.attested ? (
               <span className="badge badge-success gap-1">
-                <ShieldCheckIcon className="h-3.5 w-3.5" /> Attested (TEE)
+                <ShieldCheckIcon className="h-3.5 w-3.5" aria-hidden="true" /> Attested (TEE)
               </span>
             ) : null
           }
@@ -68,7 +71,7 @@ export const ScoreSection = ({
           <div className="mt-5 rounded-field border border-primary/30 bg-primary/5 px-4 py-3">
             <div className="flex items-center justify-between gap-2">
               <p className="k-eyebrow flex items-center gap-1.5">
-                <ShieldCheckIcon className="h-4 w-4 text-primary" /> Chainlink request ID
+                <ShieldCheckIcon className="h-4 w-4 text-primary" aria-hidden="true" /> Chainlink request ID
               </p>
               <span className="badge badge-success badge-sm">attested · TEE</span>
             </div>
@@ -80,10 +83,10 @@ export const ScoreSection = ({
                 rel="noreferrer"
                 className="btn btn-ghost btn-xs gap-1 shrink-0"
               >
-                <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" /> View
+                <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" aria-hidden="true" /> View
               </a>
               <button type="button" onClick={copyId} className="btn btn-ghost btn-xs gap-1 shrink-0">
-                <DocumentDuplicateIcon className="h-3.5 w-3.5" /> Copy
+                <DocumentDuplicateIcon className="h-3.5 w-3.5" aria-hidden="true" /> Copy
               </button>
             </div>
             <p className="mt-1.5 text-xs text-base-content/55">
@@ -125,7 +128,7 @@ export const ScoreSection = ({
               className="link text-xs inline-flex items-center gap-1 mt-3"
             >
               Verify the Chainlink attestation
-              <ArrowTopRightOnSquareIcon className="h-3 w-3" />
+              <ArrowTopRightOnSquareIcon className="h-3 w-3" aria-hidden="true" />
             </a>
           </Panel>
           <Panel
@@ -138,84 +141,106 @@ export const ScoreSection = ({
                 result.eligible ? "bg-success/10 text-success" : "bg-error/10 text-error"
               }`}
             >
-              {result.eligible
-                ? `Eligible — score ≥ ${result.minEligibleScore}`
-                : `Not eligible — below ${result.minEligibleScore} / high risk`}
+              {result.eligible ? (
+                <>
+                  Eligible · score ≥ <span className="k-mono tabular-nums">{minScore}</span>
+                </>
+              ) : (
+                <>
+                  Not eligible · below <span className="k-mono tabular-nums">{minScore}</span> or high risk
+                </>
+              )}
             </div>
           </Panel>
         </div>
       </div>
 
-      {/* All Confidential AI queries that ran (per-section + reduce) */}
-      {result.inferences && result.inferences.length > 0 && (
-        <Panel eyebrow={`${result.inferences.length} queries`} title="Confidential AI requests" className="mt-5">
-          <div className="divide-y divide-base-300">
-            {result.inferences.map(q => (
-              <div key={q.inferenceId} className="flex items-center gap-3 py-2 text-sm">
-                <span className={`badge badge-sm shrink-0 ${q.attested ? "badge-success" : "badge-ghost"}`}>
-                  {q.attested ? "TEE" : "—"}
-                </span>
-                <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
-                <a
-                  href={`/inference/${q.inferenceId}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="link k-mono text-xs truncate flex-1 inline-flex items-center gap-1"
-                >
-                  {q.inferenceId}
-                  <ArrowTopRightOnSquareIcon className="h-3 w-3 shrink-0" />
-                </a>
-              </div>
-            ))}
+      {/* Proofs & per-document detail are secondary — keep the headline clean and tuck the full
+          inference list + document analysis behind one disclosure. (Also shown in evaluations later.) */}
+      {((result.inferences && result.inferences.length > 0) || result.confidentialAi.document_analysis.length > 0) && (
+        <div className="collapse collapse-arrow border border-base-300 rounded-box mt-5">
+          <input type="checkbox" aria-label="Toggle details and proofs" />
+          <div className="collapse-title text-sm font-medium flex items-center gap-2">
+            <ShieldCheckIcon className="h-4 w-4 text-primary" aria-hidden="true" />
+            View details &amp; proofs
           </div>
-          <p className="mt-3 text-xs text-base-content/50">
-            One attested request per document, plus one for the final decision.
-          </p>
-        </Panel>
-      )}
+          <div className="collapse-content">
+            <div className="space-y-5 pt-1">
+              {/* All Confidential AI queries that ran (per-section + reduce) */}
+              {result.inferences && result.inferences.length > 0 && (
+                <div>
+                  <p className="k-eyebrow mb-2">Confidential AI requests · {result.inferences.length}</p>
+                  <div className="divide-y divide-base-300">
+                    {result.inferences.map(q => (
+                      <div key={q.inferenceId} className="flex items-center gap-3 py-2 text-sm">
+                        <span className={`badge badge-sm shrink-0 ${q.attested ? "badge-success" : "badge-ghost"}`}>
+                          {q.attested ? "TEE" : "—"}
+                        </span>
+                        <span className="font-medium w-40 sm:w-48 shrink-0 truncate">{q.label}</span>
+                        <a
+                          href={`/inference/${q.inferenceId}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="link k-mono text-xs truncate flex-1 inline-flex items-center gap-1"
+                        >
+                          {q.inferenceId}
+                          <ArrowTopRightOnSquareIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        </a>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs text-base-content/50">
+                    One attested request per document, plus one for the final decision.
+                  </p>
+                </div>
+              )}
 
-      {/* Per-document analysis (map) → final decision (reduce) */}
-      {result.confidentialAi.document_analysis.length > 0 && (
-        <Panel
-          eyebrow={`Per document · ${result.confidentialAi.document_analysis.length} analyzed`}
-          title="Document analysis"
-          className="mt-5"
-          action={
-            <span className={`badge ${DECISION_BADGE[result.confidentialAi.decision]}`}>
-              {DECISION_LABEL[result.confidentialAi.decision]}
-            </span>
-          }
-        >
-          <div className="divide-y divide-base-300">
-            {result.confidentialAi.document_analysis.map((d, i) => (
-              <div key={`${d.filename}-${i}`} className="py-3">
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className={`badge badge-sm ${SIGNAL_BADGE[d.signal]}`}>{d.signal}</span>
-                  <span className="font-medium text-sm">{d.documentType}</span>
-                  <code className="k-mono text-xs text-base-content/45">{d.filename}</code>
-                  {!d.reliable && <span className="badge badge-error badge-sm">unreliable</span>}
+              {/* Per-document analysis (map) → final decision (reduce) */}
+              {result.confidentialAi.document_analysis.length > 0 && (
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <p className="k-eyebrow">
+                      Per document · {result.confidentialAi.document_analysis.length} analyzed
+                    </p>
+                    <span className={`badge ${DECISION_BADGE[result.confidentialAi.decision]}`}>
+                      {DECISION_LABEL[result.confidentialAi.decision]}
+                    </span>
+                  </div>
+                  <div className="divide-y divide-base-300">
+                    {result.confidentialAi.document_analysis.map((d, i) => (
+                      <div key={`${d.filename}-${i}`} className="py-3">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className={`badge badge-sm ${SIGNAL_BADGE[d.signal]}`}>{d.signal}</span>
+                          <span className="font-medium text-sm">{d.documentType}</span>
+                          <code className="k-mono text-xs text-base-content/45">{d.filename}</code>
+                          {!d.reliable && <span className="badge badge-error badge-sm">unreliable</span>}
+                        </div>
+                        <p className="text-sm text-base-content/70 mt-1">{d.finding}</p>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-xs text-base-content/55">
+                          <span className="flex items-center gap-1">
+                            authenticity{" "}
+                            <span className={`badge badge-xs ${BAND_BADGE[d.authenticity]}`}>{d.authenticity}</span>
+                          </span>
+                          <span className="flex items-center gap-1">
+                            consistency{" "}
+                            <span className={`badge badge-xs ${BAND_BADGE[d.consistency]}`}>{d.consistency}</span>
+                          </span>
+                          <span className={d.reliable ? "text-success" : "text-error"}>
+                            {d.reliable ? "✓ reliable" : "✕ not reliable"}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <p className="mt-2 text-xs text-base-content/50">
+                    Each document is checked for authenticity + consistency, then the{" "}
+                    {result.confidentialAi.document_analysis.length} summaries are reduced into the final decision.
+                  </p>
                 </div>
-                <p className="text-sm text-base-content/70 mt-1">{d.finding}</p>
-                <div className="flex flex-wrap gap-x-4 gap-y-1 mt-1.5 text-xs text-base-content/55">
-                  <span className="flex items-center gap-1">
-                    authenticity{" "}
-                    <span className={`badge badge-xs ${BAND_BADGE[d.authenticity]}`}>{d.authenticity}</span>
-                  </span>
-                  <span className="flex items-center gap-1">
-                    consistency <span className={`badge badge-xs ${BAND_BADGE[d.consistency]}`}>{d.consistency}</span>
-                  </span>
-                  <span className={d.reliable ? "text-success" : "text-error"}>
-                    {d.reliable ? "✓ reliable" : "✕ not reliable"}
-                  </span>
-                </div>
-              </div>
-            ))}
+              )}
+            </div>
           </div>
-          <p className="mt-3 text-xs text-base-content/50">
-            Each document is checked for authenticity + consistency, then the{" "}
-            {result.confidentialAi.document_analysis.length} summaries are reduced into the final decision above.
-          </p>
-        </Panel>
+        </div>
       )}
 
       {/* Eligibility gate — block the path to mint/certificate when the score is below threshold. */}
@@ -227,9 +252,9 @@ export const ScoreSection = ({
           action={<RiskBadge tier={toUiRiskTier(result.riskTier)} size="sm" />}
         >
           <p className="text-sm text-base-content/70">
-            Your combined score of <span className="k-mono font-semibold">{result.combinedScore}</span> is below the{" "}
-            <span className="k-mono font-semibold">{result.minEligibleScore}</span> threshold required to issue a credit
-            certificate
+            Your combined score of <span className="k-mono font-semibold tabular-nums">{result.combinedScore}</span> is
+            below the <span className="k-mono font-semibold tabular-nums">{minScore}</span> threshold required to issue
+            a credit certificate
             {toUiRiskTier(result.riskTier) === "high" ? ", and the analysis flagged your documents as high risk" : ""}.
             The protocol issuer only attests scores at or above the threshold, so the certificate step is locked.
           </p>
@@ -243,15 +268,15 @@ export const ScoreSection = ({
 
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
-          <ArrowLeftIcon className="h-4 w-4" /> Back
+          <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" /> Back
         </button>
         {result.eligible ? (
           <button className="btn btn-primary gap-1" onClick={onIssue} type="button">
-            Continue to mint your certificate <ArrowRightIcon className="h-4 w-4" />
+            Continue to mint your certificate <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
           </button>
         ) : (
           <button className="btn btn-warning gap-1" onClick={onBack} type="button">
-            <ArrowLeftIcon className="h-4 w-4" /> Re-run with better documents
+            <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" /> Re-run with better documents
           </button>
         )}
       </div>

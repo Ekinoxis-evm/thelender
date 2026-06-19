@@ -223,7 +223,7 @@ export const OnboardingSection = ({
         subtitle="Submit your business profile and upload each piece of evidence. The connected wallet becomes the onchain identifier used by the certificate and the lending vault."
       />
       {submitting && <AnalyzingProgress docs={docProgress} reducePhase={reducePhase} />}
-      <div className={submitting ? "hidden" : "grid lg:grid-cols-3 gap-5"}>
+      <div className={submitting ? "hidden" : "grid lg:grid-cols-3 gap-5 items-start"}>
         <div className="lg:col-span-2 space-y-5">
           <Panel eyebrow="Business profile" title="Company information">
             <div className="grid sm:grid-cols-2 gap-4">
@@ -249,9 +249,9 @@ export const OnboardingSection = ({
 
           <Panel
             eyebrow="Evidence"
-            title="Upload documents"
+            title="Upload documents (at least one)"
             action={
-              <span className="k-mono text-xs text-base-content/55">
+              <span className="k-mono text-xs text-base-content/55 tabular-nums">
                 {uploadedDocs.length}/{REQUIRED_DOCS.length}
               </span>
             }
@@ -274,8 +274,29 @@ export const OnboardingSection = ({
               score does.
             </p>
           </Panel>
+
+          {/* Primary action — prominent, full-width, the clear next step. */}
+          <div className="k-card p-5 sm:p-6">
+            <button className="btn btn-primary btn-lg w-full gap-2" onClick={runCreditCheck} disabled={submitting}>
+              {submitting ? (
+                <>
+                  <span className="loading loading-spinner loading-sm" />
+                  Running confidential inference…
+                </>
+              ) : (
+                <>
+                  Run confidential credit check
+                  <ArrowRightIcon className="h-5 w-5" aria-hidden="true" />
+                </>
+              )}
+            </button>
+            <p className="mt-3 text-center text-xs text-base-content/50">
+              Attested privately in the Chainlink TEE · usually 2–4 minutes
+            </p>
+          </div>
         </div>
 
+        {/* Secondary context — the connected wallet that becomes the credit identifier. */}
         <div className="space-y-5">
           <Panel eyebrow="Wallet" title="Credit identity">
             {address ? (
@@ -291,21 +312,6 @@ export const OnboardingSection = ({
               <p className="text-sm text-base-content/60">Connect a wallet to set your credit identity.</p>
             )}
           </Panel>
-
-          <button className="btn btn-primary w-full gap-2" onClick={runCreditCheck} disabled={submitting}>
-            {submitting ? (
-              <>
-                <span className="loading loading-spinner loading-sm" />
-                Running confidential inference…
-              </>
-            ) : (
-              <>
-                Run confidential credit check
-                <ArrowRightIcon className="h-4 w-4" />
-              </>
-            )}
-          </button>
-          <p className="text-center text-xs text-base-content/45 -mt-2">Attested in the Chainlink TEE · ~10–40s</p>
         </div>
       </div>
       {!submitting && <RecentChecks borrower={address} />}

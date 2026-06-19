@@ -16,7 +16,7 @@ const PRIVY_APP_ID = process.env.NEXT_PUBLIC_PRIVY_APP_ID ?? "";
 const LiquidityPage: NextPage = () => {
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
-  if (!mounted || !PRIVY_APP_ID) return <Spinner />;
+  if (!mounted || !PRIVY_APP_ID) return <LoadingState label="Loading liquidity pools…" />;
   return <Inner />;
 };
 
@@ -24,7 +24,7 @@ const Inner = () => {
   const { ready, authenticated, login } = usePrivy();
   const { address } = useKreditoWallet();
 
-  if (!ready) return <Spinner />;
+  if (!ready) return <LoadingState label="Loading liquidity pools…" />;
 
   if (!authenticated) {
     return (
@@ -44,9 +44,10 @@ const Inner = () => {
   return <OpenLiquidity address={address as `0x${string}` | undefined} />;
 };
 
-const Spinner = () => (
-  <div className="flex justify-center pt-24">
+const LoadingState = ({ label }: { label: string }) => (
+  <div className="flex flex-col items-center gap-3 pt-24" aria-live="polite">
     <span className="loading loading-spinner loading-lg text-primary" />
+    <p className="text-sm text-base-content/60">{label}</p>
   </div>
 );
 

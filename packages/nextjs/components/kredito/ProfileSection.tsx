@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Link from "next/link";
 import {
   ArrowLeftIcon,
   ArrowRightIcon,
@@ -212,15 +213,15 @@ export const ProfileSection = ({
         )}
         <div className="mt-4 flex flex-wrap gap-3 text-sm">
           {label && (
-            <a
+            <Link
               href={`/identity/${label}`}
               target="_blank"
               rel="noreferrer"
               className="link inline-flex items-center gap-1"
             >
               View public card
-              <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
-            </a>
+              <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" aria-hidden="true" />
+            </Link>
           )}
           {txHash && (
             <a
@@ -315,15 +316,15 @@ export const ProfileSection = ({
                 )}
               </button>
               {saved && label && (
-                <a
+                <Link
                   href={`/identity/${label}`}
                   target="_blank"
                   rel="noreferrer"
                   className="link text-sm inline-flex items-center gap-1"
                 >
                   View public profile
-                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
-                </a>
+                  <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" aria-hidden="true" />
+                </Link>
               )}
             </div>
             {saved && (

@@ -9,6 +9,7 @@ import {
   ArrowTopRightOnSquareIcon,
   BanknotesIcon,
   CheckCircleIcon,
+  ShieldCheckIcon,
 } from "@heroicons/react/24/outline";
 import { PageHeader, Panel } from "~~/components/kredito";
 import { Stat, ZERO_ADDR } from "~~/components/kredito/flowBits";
@@ -26,6 +27,8 @@ import {
   type VaultLoan,
   sepoliaTxUrl,
 } from "~~/kredito/vault";
+import { creditLimitUsd } from "~~/lib/kredito";
+import { MIN_ELIGIBLE_SCORE } from "~~/services/lendsignal/score";
 import { getParsedError, notification } from "~~/utils/scaffold-eth";
 
 // Equal-principal amortization preview (mirrors the vault: principal/term per installment +
@@ -132,7 +135,9 @@ export const BorrowSection = ({
   const sym = typeof symbolData === "string" ? symbolData : "USDC";
   const liqUnits = typeof liquidity === "bigint" ? liquidity : 0n;
   const liq = Number(formatUnits(liqUnits, dec));
-  const minScore = result?.minEligibleScore ?? 600;
+  // Single source of truth for the off-chain threshold — never a magic 600.
+  const minScore = result?.minEligibleScore ?? MIN_ELIGIBLE_SCORE;
+  // The borrow gate is whatever the vault enforces onchain; fall back to the shared off-chain min.
   const floor = typeof minScoreData === "bigint" ? Number(minScoreData) : minScore;
   const minTerm = typeof minTermData === "bigint" ? Number(minTermData) : 6;
   const maxTerm = typeof maxTermData === "bigint" ? Number(maxTermData) : 36;
@@ -141,8 +146,14 @@ export const BorrowSection = ({
   // The vault locks the APR by attestation riskTier (2/low -> tierToRateBps[1]=10%; 1/medium ->
   // tierToRateBps[2]=14%). Default rates mirror the vault constructor; the schedule is illustrative.
   const annualRateBps = att?.attestation.riskTier === 2 ? 1000 : att?.attestation.riskTier === 1 ? 1400 : 0;
-  // The attestation's maxPrincipal is the score-derived credit limit (base units, USDC 6-decimals).
-  const limitUnits = att ? att.attestation.maxPrincipal : 0n;
+  // Credit limit in base units. Once signed, the attestation's maxPrincipal is authoritative; before
+  // signing, show the score-derived limit so a pre-qualified borrower sees their prospective offer
+  // (not a confusing $0). USDC 6-decimals.
+  const limitUnits = att
+    ? att.attestation.maxPrincipal
+    : score >= floor
+      ? parseUnits(String(creditLimitUsd(score)), dec)
+      : 0n;
   const limitUsd = Number(formatUnits(limitUnits, dec));
   // Borrowable cap = min(credit limit, idle liquidity).
   const maxBorrowUnits = limitUnits < liqUnits ? limitUnits : liqUnits;
@@ -182,6 +193,9 @@ export const BorrowSection = ({
 
   // Mirrors the vault's isEligible (the contract is the real gate; this drives the UI).
   const eligible = !!att && att.attestation.score >= floor && att.attestation.riskTier !== 0 && !expired;
+  // Score-eligible = the user CAN borrow once they sign. Used to avoid showing a "Not eligible"
+  // rejection to a verified borrower who simply hasn't signed the (free) attestation yet.
+  const scoreEligible = score >= floor;
   const noLiquidity = configured && liqUnits === 0n;
 
   // The amount the user typed, in base units (for the preview + the borrow tx).
@@ -305,7 +319,7 @@ export const BorrowSection = ({
       {!configured ? (
         <>
           <div className="alert alert-info mb-5">
-            <BanknotesIcon className="h-5 w-5 shrink-0" />
+            <BanknotesIcon className="h-5 w-5 shrink-0" aria-hidden="true" />
             <div>
               <p className="font-semibold">Lending vault not configured</p>
               <p className="text-sm opacity-80">
@@ -329,38 +343,68 @@ export const BorrowSection = ({
         </>
       ) : (
         <div className="space-y-4">
-          <Panel eyebrow="Onchain offer · Sepolia" title="Loan offer">
-            <div className="grid sm:grid-cols-4 gap-4">
+          <Panel
+            eyebrow="Onchain offer · Sepolia"
+            title="Your borrowing offer"
+            action={
+              att ? (
+                eligible ? (
+                  <span className="badge badge-success gap-1">
+                    <CheckCircleIcon className="h-3.5 w-3.5" aria-hidden="true" /> Eligible
+                  </span>
+                ) : (
+                  <span className="badge badge-error">Not eligible</span>
+                )
+              ) : scoreEligible ? (
+                <span className="badge badge-success badge-outline">Pre-qualified</span>
+              ) : (
+                <span className="badge badge-error">Not eligible</span>
+              )
+            }
+          >
+            {/* Headline: the one number that matters — how much they can draw right now. */}
+            <div className="rounded-field border border-base-300 bg-base-200/40 px-4 py-4">
+              <p className="k-eyebrow mb-1">Available to borrow</p>
+              <p className="k-display tabular-nums leading-none">
+                {formatUsd(maxBorrow)} <span className="text-base-content/50 text-2xl">{sym}</span>
+              </p>
+              <p className="text-xs text-base-content/50 mt-1.5">
+                The lesser of your credit limit and current pool liquidity.
+              </p>
+            </div>
+
+            <div className="grid sm:grid-cols-3 gap-4 mt-4">
               <Stat label="Pool liquidity" value={`${formatUsd(liq)} ${sym}`} />
               <Stat label="Credit limit" value={formatUsd(limitUsd)} />
               <Stat label="Your score" value={String(score)} />
-              <div>
-                <p className="k-eyebrow mb-1">Eligibility</p>
-                {att ? (
-                  eligible ? (
-                    <span className="badge badge-success gap-1">
-                      <CheckCircleIcon className="h-3.5 w-3.5" /> Eligible
-                    </span>
-                  ) : (
-                    <span className="badge badge-error">Not eligible</span>
-                  )
-                ) : (
-                  <span className="badge badge-ghost">Sign first</span>
-                )}
-              </div>
             </div>
-            {!att && (
-              <div className="rounded-field bg-warning/10 text-warning text-xs px-3 py-2 mt-3 flex items-center justify-between gap-3">
-                <span>Sign your credit attestation to borrow.</span>
-                {onReSign && (
-                  <button type="button" className="btn btn-warning btn-xs" onClick={onReSign}>
-                    Sign attestation
-                  </button>
-                )}
+
+            {/* Sign is FREE and unlocks the offer — make it the primary CTA, not a tucked-away warning.
+                Only call it a rejection when the score genuinely falls below the threshold. */}
+            {!att && scoreEligible && onReSign && (
+              <div className="mt-4 rounded-field border border-primary/30 bg-primary/5 px-4 py-3">
+                <p className="text-sm font-medium">Sign a free message to unlock your borrowing offer</p>
+                <p className="text-xs text-base-content/55 mt-0.5">No gas, no cost — it just proves wallet control.</p>
+                <button type="button" className="btn btn-primary btn-sm w-full gap-1 mt-3" onClick={onReSign}>
+                  <ShieldCheckIcon className="h-4 w-4" aria-hidden="true" /> Sign attestation
+                </button>
               </div>
             )}
-            {att && noLiquidity && (
-              <div className="rounded-field bg-warning/10 text-warning text-xs px-3 py-2 mt-3">
+            {!att && !scoreEligible && (
+              <div className="mt-4 rounded-field bg-error/10 text-error text-sm px-3 py-2">
+                Your score of <span className="k-mono tabular-nums">{score}</span> is below the{" "}
+                <span className="k-mono tabular-nums">{floor}</span> minimum required to borrow.
+              </div>
+            )}
+            {att && !eligible && (
+              <div className="mt-4 rounded-field bg-error/10 text-error text-sm px-3 py-2">
+                {expired
+                  ? "Your attestation has expired — re-sign a fresh one to borrow."
+                  : `Not eligible: the vault requires a score of at least ${floor}.`}
+              </div>
+            )}
+            {att && eligible && noLiquidity && (
+              <div className="mt-4 rounded-field bg-warning/10 text-warning text-sm px-3 py-2">
                 No liquidity yet — supply via the Liquidity step first, then borrow.
               </div>
             )}
@@ -394,7 +438,7 @@ export const BorrowSection = ({
               <div className="mt-4 rounded-field border border-base-300 px-4 py-3 flex items-center justify-between gap-3">
                 <div>
                   <p className="k-eyebrow mb-0.5">Next installment (max)</p>
-                  <p className="k-mono text-lg font-semibold">
+                  <p className="k-mono text-lg font-semibold tabular-nums">
                     {formatUsd(Number(formatUnits(installmentDue, dec)))} {sym}
                   </p>
                   <p className="text-xs text-base-content/50">principal + interest (incl. grace late-fee headroom)</p>
@@ -419,7 +463,7 @@ export const BorrowSection = ({
                   rel="noreferrer"
                   className="link k-mono text-xs break-all inline-flex items-center gap-1 mt-2"
                 >
-                  Origination tx <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
+                  Origination tx <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                 </a>
               )}
             </Panel>
@@ -469,23 +513,23 @@ export const BorrowSection = ({
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
                     <div>
                       <p className="text-xs text-base-content/55">First payment</p>
-                      <p className="k-mono font-semibold">
+                      <p className="k-mono font-semibold tabular-nums">
                         {formatUsd(Number(formatUnits(preview.firstPayment, dec)))} {sym}
                       </p>
                     </div>
                     <div>
                       <p className="text-xs text-base-content/55">Principal / mo</p>
-                      <p className="k-mono font-semibold">
+                      <p className="k-mono font-semibold tabular-nums">
                         {formatUsd(Number(formatUnits(preview.perInstallment, dec)))} {sym}
                       </p>
                     </div>
                     <div>
                       <p className="text-xs text-base-content/55">APR (locked by tier)</p>
-                      <p className="k-mono font-semibold">{annualRateBps / 100}%</p>
+                      <p className="k-mono font-semibold tabular-nums">{annualRateBps / 100}%</p>
                     </div>
                     <div>
                       <p className="text-xs text-base-content/55">Total interest</p>
-                      <p className="k-mono font-semibold">
+                      <p className="k-mono font-semibold tabular-nums">
                         {formatUsd(Number(formatUnits(preview.totalInterest, dec)))} {sym}
                       </p>
                     </div>
@@ -509,7 +553,7 @@ export const BorrowSection = ({
                   </>
                 ) : (
                   <>
-                    <BanknotesIcon className="h-4 w-4" /> Borrow {sym} (sponsored)
+                    <BanknotesIcon className="h-4 w-4" aria-hidden="true" /> Borrow {sym} (sponsored)
                   </>
                 )}
               </button>
@@ -521,7 +565,7 @@ export const BorrowSection = ({
               {loanTx && (
                 <div className="mt-3 space-y-1">
                   <div className="flex items-center gap-2 text-success text-sm font-medium">
-                    <CheckCircleIcon className="h-5 w-5" /> Disbursed {loanTx.amount} {sym}
+                    <CheckCircleIcon className="h-5 w-5" aria-hidden="true" /> Disbursed {loanTx.amount} {sym}
                   </div>
                   <a
                     href={sepoliaTxUrl(loanTx.hash)}
@@ -530,7 +574,7 @@ export const BorrowSection = ({
                     className="link k-mono text-xs break-all inline-flex items-center gap-1"
                   >
                     {loanTx.hash}
-                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" />
+                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                   </a>
                 </div>
               )}
@@ -542,10 +586,10 @@ export const BorrowSection = ({
       {!embedded && (
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mt-6">
           <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
-            <ArrowLeftIcon className="h-4 w-4" /> Back
+            <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" /> Back
           </button>
           <button className="btn btn-outline gap-1" onClick={onNext} type="button">
-            Go to liquidity <ArrowRightIcon className="h-4 w-4" />
+            Go to liquidity <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
           </button>
         </div>
       )}

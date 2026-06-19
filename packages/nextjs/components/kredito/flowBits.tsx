@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { ArrowUpTrayIcon, CheckCircleIcon, CheckIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import type { RiskTier } from "~~/kredito/types";
 import type { UploadedDocument } from "~~/services/lendsignal/types";
 
 // Shared primitives + small pieces used across the extracted Kredito sections
@@ -39,6 +40,17 @@ export const fileToBase64 = (file: File) =>
   });
 
 export const blockscoutAddressUrl = (addr: string) => `https://eth-sepolia.blockscout.com/address/${addr}`;
+
+/**
+ * Map the persisted API risk-tier string (`low_default_risk` …) to the shared `RiskTier` union used
+ * by the shared `RiskBadge`. Lets the rest of the app render one consistent risk representation.
+ */
+export const apiTierToRiskTier = (tier: string | null | undefined): RiskTier | null => {
+  if (tier === "low_default_risk") return "low";
+  if (tier === "medium_default_risk") return "medium";
+  if (tier === "high_default_risk") return "high";
+  return null;
+};
 
 export const Field = ({
   label,
@@ -205,7 +217,7 @@ export const AnalyzingProgress = ({ docs, reducePhase }: { docs: DocProgress[]; 
   };
 
   return (
-    <div className="k-card p-6 max-w-2xl mx-auto">
+    <div className="k-card p-6 max-w-2xl mx-auto" aria-live="polite">
       <div className="flex items-center justify-between gap-3 mb-1">
         <div className="flex items-center gap-3">
           <span className="loading loading-spinner loading-md text-primary" />

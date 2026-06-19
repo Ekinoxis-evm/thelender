@@ -199,7 +199,7 @@ export const CertificateSection = ({
                 <div className="flex items-center gap-2 text-sm font-medium">
                   {verified ? (
                     <span className="text-success inline-flex items-center gap-1.5">
-                      <CheckCircleIcon className="h-5 w-5" /> Verified — recovered signer = issuer
+                      <CheckCircleIcon className="h-5 w-5" aria-hidden="true" /> Verified — recovered signer = issuer
                     </span>
                   ) : (
                     <span className="text-error">Signature did not verify</span>
@@ -219,7 +219,7 @@ export const CertificateSection = ({
                 </div>
                 {alreadyMinted && (
                   <button className="btn btn-primary btn-sm w-full gap-1" onClick={onNext} type="button">
-                    {nextCta} <ArrowRightIcon className="h-4 w-4" />
+                    {nextCta} <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
                   </button>
                 )}
                 <p className="text-xs text-base-content/50">
@@ -240,7 +240,7 @@ export const CertificateSection = ({
                     </>
                   ) : (
                     <>
-                      <ShieldCheckIcon className="h-4 w-4" /> Sign credit attestation
+                      <ShieldCheckIcon className="h-4 w-4" aria-hidden="true" /> Sign credit attestation
                     </>
                   )}
                 </button>
@@ -258,7 +258,7 @@ export const CertificateSection = ({
               ) : minted ? (
                 <div className="space-y-3">
                   <div className="flex items-center gap-2 text-sm font-medium text-success">
-                    <CheckCircleIcon className="h-5 w-5" /> Minted{" "}
+                    <CheckCircleIcon className="h-5 w-5" aria-hidden="true" /> Minted{" "}
                     <span className="k-mono">{fullName(minted.label)}</span>
                   </div>
                   <p className="text-sm text-base-content/65">
@@ -277,10 +277,10 @@ export const CertificateSection = ({
                     className="link text-sm inline-flex items-center gap-1"
                   >
                     View on explorer
-                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" />
+                    <ArrowTopRightOnSquareIcon className="h-3.5 w-3.5" aria-hidden="true" />
                   </a>
                   <button className="btn btn-primary btn-sm w-full gap-1" onClick={onNext} type="button">
-                    Continue to profile setup <ArrowRightIcon className="h-4 w-4" />
+                    Continue to profile setup <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
                   </button>
                 </div>
               ) : (
@@ -313,7 +313,7 @@ export const CertificateSection = ({
                       </>
                     ) : (
                       <>
-                        <GlobeAltIcon className="h-4 w-4" /> Mint{" "}
+                        <GlobeAltIcon className="h-4 w-4" aria-hidden="true" /> Mint{" "}
                         {safeLabel(label) ? <span className="k-mono">{fullName(safeLabel(label))}</span> : "identity"}
                       </>
                     )}
@@ -329,11 +329,11 @@ export const CertificateSection = ({
       </div>
       <div className="flex justify-between mt-6">
         <button className="btn btn-ghost gap-1" onClick={onBack} type="button">
-          <ArrowLeftIcon className="h-4 w-4" /> Back
+          <ArrowLeftIcon className="h-4 w-4" aria-hidden="true" /> Back
         </button>
         <button className="btn btn-primary gap-1" onClick={onNext} type="button" disabled={!nextReady}>
           {nextReady ? nextCta : alreadyMinted ? "Sign your attestation to continue" : "Mint your identity to continue"}{" "}
-          <ArrowRightIcon className="h-4 w-4" />
+          <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
     </>

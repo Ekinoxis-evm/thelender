@@ -1,7 +1,14 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeftIcon, BanknotesIcon, ClockIcon, ShieldCheckIcon, UserCircleIcon } from "@heroicons/react/24/outline";
+import {
+  ArrowLeftIcon,
+  ArrowRightIcon,
+  BanknotesIcon,
+  ClockIcon,
+  ShieldCheckIcon,
+  UserCircleIcon,
+} from "@heroicons/react/24/outline";
 import { KreditoIdentityCard, PageHeader } from "~~/components/kredito";
 import { BorrowSection } from "~~/components/kredito/BorrowSection";
 import { CertificateSection } from "~~/components/kredito/CertificateSection";
@@ -18,6 +25,8 @@ import { notification } from "~~/utils/scaffold-eth";
 
 type Tab = "overview" | "borrow" | "evaluations" | "profile" | "liquidity";
 
+const TABS: Tab[] = ["overview", "borrow", "evaluations", "profile", "liquidity"];
+
 const NAV: { key: Tab; label: string; icon: typeof BanknotesIcon }[] = [
   { key: "overview", label: "Overview", icon: ShieldCheckIcon },
   { key: "borrow", label: "Borrow", icon: BanknotesIcon },
@@ -25,6 +34,8 @@ const NAV: { key: Tab; label: string; icon: typeof BanknotesIcon }[] = [
   { key: "profile", label: "Edit profile", icon: UserCircleIcon },
   { key: "liquidity", label: "Provide liquidity", icon: BanknotesIcon },
 ];
+
+const isTab = (v: string | null): v is Tab => v !== null && (TABS as string[]).includes(v);
 
 // Map the stored API risk tier string back to the StoredScore RiskTier union so the re-sign route
 // can reconstruct a minimal score from a historic credit_check.
@@ -45,7 +56,21 @@ export const Dashboard = ({ identity }: { identity: EnsIdentity }) => {
   const { address } = useKreditoWallet();
   const borrower = (address ?? ZERO_ADDR) as `0x${string}`;
 
-  const [tab, setTab] = useState<Tab>("overview");
+  // Reflect the active tab in ?tab= so refresh/back works, without pulling in useSearchParams
+  // (which would force a Suspense boundary). Read once on mount; push on change.
+  const [tab, setTabState] = useState<Tab>("overview");
+  useEffect(() => {
+    const param = new URLSearchParams(window.location.search).get("tab");
+    if (isTab(param)) setTabState(param);
+  }, []);
+  const setTab = (next: Tab) => {
+    setTabState(next);
+    const url = new URL(window.location.href);
+    if (next === "overview") url.searchParams.delete("tab");
+    else url.searchParams.set("tab", next);
+    window.history.replaceState(null, "", url.toString());
+  };
+
   const [att, setAtt] = useState<SignedAttestation | null>(null);
   // The Borrow tab requires a signed attestation. When absent, we flip into a re-sign sub-view.
   const [reSigning, setReSigning] = useState(false);
@@ -119,24 +144,29 @@ export const Dashboard = ({ identity }: { identity: EnsIdentity }) => {
 
   return (
     <div className="mx-auto max-w-6xl px-4 sm:px-5 py-8 w-full">
-      {/* Tab nav — native k-card pill row */}
-      <div className="k-card p-2 mb-6 flex items-center gap-1 overflow-x-auto">
-        {NAV.map(n => {
-          const active = tab === n.key;
-          return (
-            <button
-              key={n.key}
-              type="button"
-              onClick={() => setTab(n.key)}
-              className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm whitespace-nowrap transition-colors ${
-                active ? "bg-primary text-primary-content" : "hover:bg-base-200 text-base-content/80"
-              }`}
-            >
-              <n.icon className="h-4 w-4" />
-              {n.label}
-            </button>
-          );
-        })}
+      {/* Tab nav — flat free-jump pill row (distinct from the gated wizard stepper). */}
+      <div className="k-card p-2 mb-6 relative">
+        <div className="flex items-center gap-1 overflow-x-auto">
+          {NAV.map(n => {
+            const active = tab === n.key;
+            return (
+              <button
+                key={n.key}
+                type="button"
+                onClick={() => setTab(n.key)}
+                aria-current={active ? "page" : undefined}
+                className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-sm whitespace-nowrap transition-colors ${
+                  active ? "bg-primary text-primary-content" : "hover:bg-base-200 text-base-content/80"
+                }`}
+              >
+                <n.icon className="h-4 w-4" aria-hidden="true" />
+                {n.label}
+              </button>
+            );
+          })}
+        </div>
+        {/* fade cue that more tabs exist when the row scrolls on small screens */}
+        <div className="pointer-events-none absolute inset-y-2 right-2 w-8 bg-gradient-to-l from-base-100 to-transparent rounded-r-lg md:hidden" />
       </div>
 
       {tab === "overview" && (
@@ -167,51 +197,59 @@ export const Dashboard = ({ identity }: { identity: EnsIdentity }) => {
                 attestation_hash: identity.attestation_hash,
               }}
             />
-            <div className="grid sm:grid-cols-2 gap-4">
-              <button
-                type="button"
-                onClick={() => setTab("borrow")}
-                className="k-card p-5 text-left hover:bg-base-200 transition-colors"
-              >
-                <BanknotesIcon className="h-6 w-6 text-primary mb-2" />
-                <h3 className="font-semibold">Borrow</h3>
-                <p className="text-sm text-base-content/60 mt-1">
-                  Draw working capital against your attestation and manage installments.
-                </p>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab("evaluations")}
-                className="k-card p-5 text-left hover:bg-base-200 transition-colors"
-              >
-                <ClockIcon className="h-6 w-6 text-primary mb-2" />
-                <h3 className="font-semibold">My evaluations</h3>
-                <p className="text-sm text-base-content/60 mt-1">
-                  Review every credit check with a full per-document breakdown and TEE proofs.
-                </p>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab("profile")}
-                className="k-card p-5 text-left hover:bg-base-200 transition-colors"
-              >
-                <UserCircleIcon className="h-6 w-6 text-primary mb-2" />
-                <h3 className="font-semibold">Edit profile</h3>
-                <p className="text-sm text-base-content/60 mt-1">
-                  Update your public credit-identity records (display name, links, socials).
-                </p>
-              </button>
-              <button
-                type="button"
-                onClick={() => setTab("liquidity")}
-                className="k-card p-5 text-left hover:bg-base-200 transition-colors"
-              >
-                <BanknotesIcon className="h-6 w-6 text-primary mb-2" />
-                <h3 className="font-semibold">Provide liquidity</h3>
-                <p className="text-sm text-base-content/60 mt-1">
-                  Supply USDC to the lending vault or back the pool — open to any wallet.
-                </p>
-              </button>
+            {/* Concise status summary — no duplicate of the tab row above. */}
+            <div className="k-card p-5 sm:p-6 space-y-5">
+              <div className="grid sm:grid-cols-2 gap-5">
+                <div>
+                  <p className="k-eyebrow mb-1">Credit identity</p>
+                  <p className="k-mono text-lg font-semibold truncate">{identity.label}.kredito.eth</p>
+                </div>
+                <div>
+                  <p className="k-eyebrow mb-1">Status</p>
+                  <span className="badge badge-success gap-1.5">
+                    <ShieldCheckIcon className="h-3.5 w-3.5" aria-hidden="true" /> Verified · Approved
+                  </span>
+                </div>
+              </div>
+
+              <div>
+                <p className="k-eyebrow mb-2">What you can do</p>
+                <ul className="divide-y divide-base-300 rounded-field border border-base-300">
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => setTab("borrow")}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-base-200 transition-colors"
+                    >
+                      <BanknotesIcon className="h-5 w-5 text-primary shrink-0" aria-hidden="true" />
+                      <span className="text-sm">Borrow working capital against your attestation</span>
+                      <ArrowRightIcon className="ml-auto h-4 w-4 text-base-content/40 shrink-0" aria-hidden="true" />
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => setTab("evaluations")}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-base-200 transition-colors"
+                    >
+                      <ClockIcon className="h-5 w-5 text-primary shrink-0" aria-hidden="true" />
+                      <span className="text-sm">Review your credit checks and TEE proofs</span>
+                      <ArrowRightIcon className="ml-auto h-4 w-4 text-base-content/40 shrink-0" aria-hidden="true" />
+                    </button>
+                  </li>
+                  <li>
+                    <button
+                      type="button"
+                      onClick={() => setTab("profile")}
+                      className="flex w-full items-center gap-3 px-4 py-3 text-left hover:bg-base-200 transition-colors"
+                    >
+                      <UserCircleIcon className="h-5 w-5 text-primary shrink-0" aria-hidden="true" />
+                      <span className="text-sm">Edit your public credit-identity profile</span>
+                      <ArrowRightIcon className="ml-auto h-4 w-4 text-base-content/40 shrink-0" aria-hidden="true" />
+                    </button>
+                  </li>
+                </ul>
+              </div>
             </div>
           </div>
         </>
@@ -249,7 +287,7 @@ export const Dashboard = ({ identity }: { identity: EnsIdentity }) => {
           />
         ))}
 
-      {tab === "evaluations" && <EvaluationsSection borrower={borrower} />}
+      {tab === "evaluations" && <EvaluationsSection borrower={borrower} onStartEvaluation={() => setTab("borrow")} />}
 
       {tab === "profile" && <ProfileSection borrower={borrower} mintedLabel={identity.label} embedded />}
 

@@ -1,20 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { ArrowLeftIcon, ArrowTopRightOnSquareIcon, ShieldCheckIcon } from "@heroicons/react/24/outline";
-import { HashChip, PageHeader, Panel } from "~~/components/kredito";
-import { BAND_BADGE, SIGNAL_BADGE } from "~~/components/kredito/flowBits";
-
-const TIER_LABEL: Record<string, string> = {
-  low_default_risk: "Low",
-  medium_default_risk: "Medium",
-  high_default_risk: "High",
-};
-const TIER_BADGE: Record<string, string> = {
-  low_default_risk: "badge-success",
-  medium_default_risk: "badge-warning",
-  high_default_risk: "badge-error",
-};
+import { useCallback, useEffect, useState } from "react";
+import {
+  ArrowLeftIcon,
+  ArrowPathIcon,
+  ArrowRightIcon,
+  ArrowTopRightOnSquareIcon,
+  ClockIcon,
+  ShieldCheckIcon,
+} from "@heroicons/react/24/outline";
+import { HashChip, PageHeader, Panel, RiskBadge } from "~~/components/kredito";
+import { BAND_BADGE, SIGNAL_BADGE, Stat, apiTierToRiskTier } from "~~/components/kredito/flowBits";
 
 type CheckRow = {
   id: string;
@@ -66,6 +62,8 @@ const DetailView = ({
   const [detail, setDetail] = useState<EvaluationDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // bump to re-trigger the fetch (the "Try again" affordance).
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -90,7 +88,7 @@ const DetailView = ({
     return () => {
       active = false;
     };
-  }, [inferenceId, borrower]);
+  }, [inferenceId, borrower, reloadKey]);
 
   return (
     <div className="space-y-5">
@@ -100,34 +98,32 @@ const DetailView = ({
 
       {loading ? (
         <Panel eyebrow="Evaluation" title="Loading…">
-          <div className="flex items-center gap-2 text-sm text-base-content/60">
+          <div className="flex items-center gap-2 text-sm text-base-content/60" aria-live="polite">
             <span className="loading loading-spinner loading-sm" /> Fetching your assessment…
           </div>
         </Panel>
       ) : error ? (
         <Panel eyebrow="Evaluation" title="Unavailable">
-          <p className="text-sm text-error">{error}</p>
+          <div aria-live="polite">
+            <p className="text-sm text-error">{error}</p>
+            <button type="button" className="btn btn-ghost btn-sm gap-1 mt-3" onClick={() => setReloadKey(k => k + 1)}>
+              <ArrowPathIcon className="h-4 w-4" aria-hidden="true" /> Try again
+            </button>
+          </div>
         </Panel>
       ) : detail ? (
         <>
           <Panel
             eyebrow="Overall result"
             title="Credit assessment"
-            action={
-              <span className={`badge ${detail.check.risk_tier ? TIER_BADGE[detail.check.risk_tier] : "badge-ghost"}`}>
-                {detail.check.risk_tier ? `${TIER_LABEL[detail.check.risk_tier]} risk` : "—"}
-              </span>
-            }
+            action={(() => {
+              const tier = apiTierToRiskTier(detail.check.risk_tier);
+              return tier ? <RiskBadge tier={tier} size="sm" /> : <span className="badge badge-ghost">—</span>;
+            })()}
           >
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              <div>
-                <p className="k-eyebrow mb-1">Combined score</p>
-                <p className="k-mono text-2xl font-semibold">{detail.check.combined_score ?? "—"}</p>
-              </div>
-              <div>
-                <p className="k-eyebrow mb-1">Eligible</p>
-                <p className="k-mono text-2xl font-semibold">{detail.check.eligible ? "Yes" : "No"}</p>
-              </div>
+              <Stat label="Combined score" value={detail.check.combined_score?.toString() ?? "—"} />
+              <Stat label="Eligible" value={detail.check.eligible ? "Yes" : "No"} />
               <div>
                 <p className="k-eyebrow mb-1">Model</p>
                 <p className="k-mono text-sm font-medium truncate">{detail.check.model ?? "—"}</p>
@@ -226,13 +222,23 @@ const DetailView = ({
  * "My evaluations" — the wallet's historic credit checks with drill-down into the per-document
  * analysis + the overall score + attestation hash + a link to the TEE proof for each.
  */
-export const EvaluationsSection = ({ borrower }: { borrower: string }) => {
+export const EvaluationsSection = ({
+  borrower,
+  onStartEvaluation,
+}: {
+  borrower: string;
+  // Optional CTA from the empty state — e.g. switch the dashboard to the Borrow tab.
+  onStartEvaluation?: () => void;
+}) => {
   const [checks, setChecks] = useState<CheckRow[] | null>(null);
   const [configured, setConfigured] = useState(true);
+  const [error, setError] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     let active = true;
+    setChecks(null);
+    setError(false);
     fetch(`/api/lendsignal/checks?limit=25&borrower=${borrower}`)
       .then(r => r.json())
       .then(j => {
@@ -240,11 +246,17 @@ export const EvaluationsSection = ({ borrower }: { borrower: string }) => {
         setConfigured(j.configured !== false);
         setChecks(j.checks ?? []);
       })
-      .catch(() => active && setChecks([]));
+      .catch(() => {
+        if (!active) return;
+        setError(true);
+        setChecks([]);
+      });
     return () => {
       active = false;
     };
   }, [borrower]);
+
+  useEffect(() => load(), [load]);
 
   if (selected) {
     return <DetailView inferenceId={selected} borrower={borrower} onBack={() => setSelected(null)} />;
@@ -261,40 +273,63 @@ export const EvaluationsSection = ({ borrower }: { borrower: string }) => {
         {!configured ? (
           <p className="text-sm text-base-content/60">Evaluation history is unavailable (Supabase not configured).</p>
         ) : checks === null ? (
-          <div className="flex items-center gap-2 text-sm text-base-content/60">
+          <div className="flex items-center gap-2 text-sm text-base-content/60" aria-live="polite">
             <span className="loading loading-spinner loading-sm" /> Loading your evaluations…
           </div>
+        ) : error ? (
+          <div aria-live="polite">
+            <p className="text-sm text-error">Could not load your evaluations.</p>
+            <button type="button" className="btn btn-ghost btn-sm gap-1 mt-3" onClick={load}>
+              <ArrowPathIcon className="h-4 w-4" aria-hidden="true" /> Try again
+            </button>
+          </div>
         ) : checks.length === 0 ? (
-          <p className="text-sm text-base-content/55">No evaluations stored yet for this wallet.</p>
+          <div className="rounded-field border border-dashed border-base-300 px-4 py-6 text-center">
+            <ClockIcon className="h-6 w-6 text-primary mx-auto mb-2" aria-hidden="true" />
+            <p className="font-medium">No evaluations stored yet</p>
+            <p className="text-sm text-base-content/60 mt-1">
+              Run a confidential credit check to assess your business and unlock borrowing.
+            </p>
+            {onStartEvaluation && (
+              <button type="button" className="btn btn-primary btn-sm gap-1 mt-4" onClick={onStartEvaluation}>
+                Start an evaluation <ArrowRightIcon className="h-4 w-4" aria-hidden="true" />
+              </button>
+            )}
+          </div>
         ) : (
           <div className="divide-y divide-base-300">
-            {checks.map(c => (
-              <div key={c.id} className="flex items-center gap-3 py-3 text-sm">
-                <span className="k-mono text-xs text-base-content/55 w-32 shrink-0">
-                  {new Date(c.created_at).toLocaleDateString()}
-                </span>
-                <span className="k-mono font-semibold w-12 shrink-0">{c.combined_score ?? "—"}</span>
-                <span className={`badge badge-sm shrink-0 ${c.risk_tier ? TIER_BADGE[c.risk_tier] : "badge-ghost"}`}>
-                  {c.risk_tier ? TIER_LABEL[c.risk_tier] : "—"}
-                </span>
-                <span
-                  className={`badge badge-sm badge-ghost shrink-0 ${c.eligible ? "text-success" : "text-base-content/50"}`}
-                >
-                  {c.eligible ? "eligible" : "not eligible"}
-                </span>
-                {c.attested && <span className="badge badge-ghost badge-sm shrink-0">TEE</span>}
-                <code className="k-mono text-xs text-base-content/45 truncate flex-1 hidden sm:block">
-                  {c.inference_id}
-                </code>
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-xs shrink-0"
-                  onClick={() => setSelected(c.inference_id)}
-                >
-                  View details
-                </button>
-              </div>
-            ))}
+            {checks.map(c => {
+              const tier = apiTierToRiskTier(c.risk_tier);
+              return (
+                <div key={c.id} className="flex items-center gap-3 py-3 text-sm">
+                  <span className="k-mono text-xs text-base-content/55 w-32 shrink-0 tabular-nums">
+                    {new Date(c.created_at).toLocaleDateString()}
+                  </span>
+                  <span className="k-mono font-semibold w-12 shrink-0 tabular-nums">{c.combined_score ?? "—"}</span>
+                  {tier ? (
+                    <RiskBadge tier={tier} size="sm" />
+                  ) : (
+                    <span className="badge badge-sm badge-ghost shrink-0">—</span>
+                  )}
+                  <span
+                    className={`badge badge-sm badge-ghost shrink-0 ${c.eligible ? "text-success" : "text-base-content/50"}`}
+                  >
+                    {c.eligible ? "eligible" : "not eligible"}
+                  </span>
+                  {c.attested && <span className="badge badge-ghost badge-sm shrink-0">TEE</span>}
+                  <code className="k-mono text-xs text-base-content/45 truncate flex-1 hidden sm:block">
+                    {c.inference_id}
+                  </code>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs shrink-0"
+                    onClick={() => setSelected(c.inference_id)}
+                  >
+                    View details
+                  </button>
+                </div>
+              );
+            })}
           </div>
         )}
       </Panel>

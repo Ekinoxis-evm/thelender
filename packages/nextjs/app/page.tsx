@@ -35,12 +35,12 @@ const HomeInner = () => {
   // explicitly choose "Borrow capital". (LPs go to /liquidity straight from the hub.)
   const [startedBorrow, setStartedBorrow] = useState(false);
 
-  if (!ready) return <Spinner />;
+  if (!ready) return <LoadingState label="Connecting your wallet…" />;
   if (!authenticated) return <Landing onConnect={login} />;
 
   // Authenticated: wait for the identity lookup before deciding so a verified wallet is never
   // (even briefly) pushed into the evaluation path.
-  if (loading) return <Spinner />;
+  if (loading) return <LoadingState label="Checking your credit identity…" />;
 
   if (identity) return <Dashboard identity={identity} />;
 
@@ -50,8 +50,9 @@ const HomeInner = () => {
   return <EvaluationFlow onMinted={() => void refetch()} />;
 };
 
-const Spinner = () => (
-  <div className="flex justify-center pt-24">
+const LoadingState = ({ label }: { label: string }) => (
+  <div className="flex flex-col items-center gap-3 pt-24" aria-live="polite">
     <span className="loading loading-spinner loading-lg text-primary" />
+    <p className="text-sm text-base-content/60">{label}</p>
   </div>
 );

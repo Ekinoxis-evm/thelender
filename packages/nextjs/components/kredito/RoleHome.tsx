@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import type { Address } from "viem";
 import { useReadContract } from "wagmi";
 import { ArrowRightIcon, BanknotesIcon, ShieldCheckIcon } from "@heroicons/react/24/outline";
@@ -52,10 +53,10 @@ const RoleBadges = ({ wallet }: { wallet?: Address }) => {
     <div className="flex flex-wrap items-center gap-2">
       <span className="k-eyebrow">Your roles</span>
       <span className={`badge gap-1 ${isBorrower ? "badge-primary" : "badge-ghost"}`}>
-        <BanknotesIcon className="h-3.5 w-3.5" /> Borrower {isBorrower ? "· active" : "· none"}
+        <BanknotesIcon className="h-3.5 w-3.5" aria-hidden="true" /> Borrower {isBorrower ? "· active" : "· none"}
       </span>
       <span className={`badge gap-1 ${isLp ? "badge-secondary" : "badge-ghost"}`}>
-        <ShieldCheckIcon className="h-3.5 w-3.5" /> LP {isLp ? "· active" : "· none"}
+        <ShieldCheckIcon className="h-3.5 w-3.5" aria-hidden="true" /> LP {isLp ? "· active" : "· none"}
       </span>
     </div>
   );
@@ -86,22 +87,24 @@ export const RoleHome = ({ onStartBorrow }: { onStartBorrow: () => void }) => {
           onClick={onStartBorrow}
           className="k-card p-6 text-left hover:bg-base-200 transition-colors group flex flex-col"
         >
-          <BanknotesIcon className="h-7 w-7 text-primary mb-3" />
+          <BanknotesIcon className="h-7 w-7 text-primary mb-3" aria-hidden="true" />
           <h3 className="text-lg font-semibold">Borrow capital</h3>
           <p className="text-sm text-base-content/65 mt-1 flex-1">
-            Get a verified <code className="k-mono">&lt;label&gt;.kredito.eth</code> credit identity from a private
-            Chainlink AI assessment, then draw working capital against it. Repay in installments.
+            Get a verified onchain credit identity, then borrow working capital — repaid in installments.
           </p>
           <span className="badge badge-ghost mt-3">Requires credit identity</span>
           <span className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-primary">
             Start credit evaluation
-            <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+            <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
           </span>
         </button>
 
         {/* Provide-liquidity path — OPEN. No identity required; goes straight to the LP dashboard. */}
-        <a href="/liquidity" className="k-card p-6 text-left hover:bg-base-200 transition-colors group flex flex-col">
-          <ShieldCheckIcon className="h-7 w-7 text-secondary mb-3" />
+        <Link
+          href="/liquidity"
+          className="k-card p-6 text-left hover:bg-base-200 transition-colors group flex flex-col"
+        >
+          <ShieldCheckIcon className="h-7 w-7 text-secondary mb-3" aria-hidden="true" />
           <h3 className="text-lg font-semibold">Provide liquidity</h3>
           <p className="text-sm text-base-content/65 mt-1 flex-1">
             Supply USDC to the lending vault and earn borrower interest, or back the pool with COVER to earn the
@@ -110,9 +113,9 @@ export const RoleHome = ({ onStartBorrow }: { onStartBorrow: () => void }) => {
           <span className="badge badge-success badge-outline mt-3">Open · no identity</span>
           <span className="mt-3 inline-flex items-center gap-1 text-sm font-medium text-secondary">
             Open the LP dashboard
-            <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" />
+            <ArrowRightIcon className="h-4 w-4 transition-transform group-hover:translate-x-0.5" aria-hidden="true" />
           </span>
-        </a>
+        </Link>
       </div>
     </div>
   );
