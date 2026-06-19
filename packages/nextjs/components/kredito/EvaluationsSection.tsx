@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowLeftIcon,
   ArrowPathIcon,
@@ -11,18 +11,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { HashChip, PageHeader, Panel, RiskBadge } from "~~/components/kredito";
 import { BAND_BADGE, SIGNAL_BADGE, Stat, apiTierToRiskTier } from "~~/components/kredito/flowBits";
-
-type CheckRow = {
-  id: string;
-  created_at: string;
-  inference_id: string;
-  model: string | null;
-  attested: boolean;
-  combined_score: number | null;
-  risk_tier: string | null;
-  eligible: boolean | null;
-  attestation_hash?: string | null;
-};
+import { type CheckRow, useCreditChecks } from "~~/kredito/useCreditChecks";
 
 type DocAnalysis = {
   signal?: string;
@@ -230,33 +219,8 @@ export const EvaluationsSection = ({
   // Optional CTA from the empty state — e.g. switch the dashboard to the Borrow tab.
   onStartEvaluation?: () => void;
 }) => {
-  const [checks, setChecks] = useState<CheckRow[] | null>(null);
-  const [configured, setConfigured] = useState(true);
-  const [error, setError] = useState(false);
+  const { checks, configured, error, reload } = useCreditChecks(borrower, 25);
   const [selected, setSelected] = useState<string | null>(null);
-
-  const load = useCallback(() => {
-    let active = true;
-    setChecks(null);
-    setError(false);
-    fetch(`/api/lendsignal/checks?limit=25&borrower=${borrower}`)
-      .then(r => r.json())
-      .then(j => {
-        if (!active) return;
-        setConfigured(j.configured !== false);
-        setChecks(j.checks ?? []);
-      })
-      .catch(() => {
-        if (!active) return;
-        setError(true);
-        setChecks([]);
-      });
-    return () => {
-      active = false;
-    };
-  }, [borrower]);
-
-  useEffect(() => load(), [load]);
 
   if (selected) {
     return <DetailView inferenceId={selected} borrower={borrower} onBack={() => setSelected(null)} />;
@@ -279,7 +243,7 @@ export const EvaluationsSection = ({
         ) : error ? (
           <div aria-live="polite">
             <p className="text-sm text-error">Could not load your evaluations.</p>
-            <button type="button" className="btn btn-ghost btn-sm gap-1 mt-3" onClick={load}>
+            <button type="button" className="btn btn-ghost btn-sm gap-1 mt-3" onClick={reload}>
               <ArrowPathIcon className="h-4 w-4" aria-hidden="true" /> Try again
             </button>
           </div>
