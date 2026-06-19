@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import {
   ArrowRightIcon,
   CpuChipIcon,
@@ -28,7 +29,8 @@ const MECHANISM = [
  * Logged-out pitch landing. Reads like a deck — each band is a "slide" with
  * strong typographic hierarchy and big stat numbers. Every CTA triggers
  * `onConnect`, which starts the wallet-login flow; once authenticated the home
- * swaps to the in-page flow (see KreditoFlow).
+ * routes on identity state — a verified wallet lands on its Dashboard, an
+ * unverified one starts the credit-identity evaluation (see app/page.tsx).
  */
 export const Landing = ({ onConnect }: { onConnect?: () => void }) => {
   return (
@@ -37,7 +39,18 @@ export const Landing = ({ onConnect }: { onConnect?: () => void }) => {
       <section className="k-hero text-white">
         <div className="mx-auto max-w-6xl px-5 py-20 sm:py-28 grid lg:grid-cols-[1.1fr_0.9fr] gap-14 items-center">
           <div>
-            <p className="k-eyebrow text-accent mb-5">Credit-based borrowing for emerging-market SMEs</p>
+            <div className="flex items-center gap-3 mb-5">
+              <Image
+                src="/kredito-icon.svg"
+                alt=""
+                width={44}
+                height={44}
+                priority
+                unoptimized
+                className="h-11 w-11 rounded-xl shrink-0"
+              />
+              <p className="k-eyebrow text-accent">Credit-based borrowing for emerging-market SMEs</p>
+            </div>
             <h1 className="k-display text-4xl sm:text-6xl font-semibold leading-[1.02]">
               Today we welcome <span className="text-accent">Kredito</span>.
             </h1>

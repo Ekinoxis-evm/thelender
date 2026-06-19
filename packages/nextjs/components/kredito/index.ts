@@ -11,3 +11,5 @@ export { NextStepCard } from "./NextStepCard";
 export { FlowShell } from "./FlowShell";
 export { KreditoIdentityCard, IdentityChip } from "./KreditoIdentityCard";
 export type { IdentityCardData } from "./KreditoIdentityCard";
+export { Dashboard } from "./Dashboard";
+export { EvaluationFlow } from "./EvaluationFlow";
