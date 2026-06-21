@@ -50,8 +50,8 @@ Steps 1–4 are **live**; steps 5–6 depend on the not-yet-deployed `KreditoVau
 | 2 | **Score** | `POST /api/lendsignal/score` runs a **map→reduce** pipeline: one Confidential AI inference per document (section prompts) → a reduce inference → final decision. The combined score (`0–1000`) **is** the AI score — there is **no** credit-bureau blend, no off-chain profile signal, and no synthetic/mock fallback. Tiers `>=750` low · `400–749` medium · `<400` high; `eligible = score >= 400 && tier != high`. Persisted to `credit_checks` (results + content hashes, **no raw docs**). If `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is missing or any inference fails / returns unparseable output, the route returns a **clear error** — never a fake score. | server |
 | 3 | **Certificate / Identity** | (a) `POST /api/lendsignal/attest` — issuer signs an EIP-712 `CreditAttestation`; its `maxPrincipal` (credit limit) is **derived from the score** (`creditLimitUsd`), not user-entered. (b) User signs `mintMessage` (proves wallet control); `POST /api/identity/mint` verifies it (`verifyMessage`, EOA + ERC-1271/6492), checks the Supabase decision is `approved`, then the issuer submits `KreditoController.mint` (Privy-sponsored). Result: a `<label>.kredito.eth` subname the **user owns**, with an **issuer-locked** `kredito.status = approved` + attestation hash. | client + server + onchain |
 | 4 | **Profile** | Customize the public ENS credit identity (display name, about, avatar, banner, website, email, location, X / GitHub / Telegram / Discord / LinkedIn). Records are written onchain via owner-gated `KreditoResolver.setTexts` (gas-sponsored) and mirrored to Supabase `ens_identities`; a live preview card renders as you type. Public verification at `/identity/<label>` and a `/verify` lookup page. | client + server + onchain |
-| 5 | **Borrow** *(deferred)* | `KreditoVault.borrow(attestation, signature, amount)` — the vault recovers `signer == issuer` onchain and checks score ≥ `minScore`, unexpired, `amount ≤ maxPrincipal`. Disburses an undercollateralized loan; gas sponsored. Repay batches `approve + repay` into one UserOp. The vault's `minScore` (currently 600) is stricter than the ≥400 off-chain mint threshold, so the two gates differ. | onchain |
-| 6 | **Liquidity** *(deferred)* | ERC-4626 deposit + ERC-7540 async redeem (`requestRedeem` → keeper `fulfillRedeem` → `claim`). **Vault not deployed.** | onchain |
+| 5 | **Borrow** | `KreditoVault.borrow(attestation, signature, amount)` — the vault recovers `signer == issuer` onchain and checks score ≥ `minScore`, unexpired, `amount ≤ maxPrincipal`. Disburses an undercollateralized loan (installments); gas sponsored. Repay batches `approve + repay` into one UserOp. The vault's `minScore` (currently 600) is stricter than the ≥400 off-chain mint threshold, so the two gates differ. **Deployed on Sepolia** — but the vault is unseeded, so borrow stays pending until an LP supplies USDC (step 6). | onchain |
+| 6 | **Liquidity** | ERC-4626 deposit + ERC-7540 async redeem (`requestRedeem` → keeper `fulfillRedeem` → `claim`). **Deployed on Sepolia** — LPs supply USDC here to fund borrows. | onchain |
 
 ## Contracts (`packages/foundry/contracts`)
 
@@ -59,7 +59,7 @@ Steps 1–4 are **live**; steps 5–6 depend on the not-yet-deployed `KreditoVau
 |----------|------|--------|
 | **KreditoController** (`kredito/`) | Issuance authority for `<label>.kredito.eth`. Holds `ROLE_REGISTRAR` on the subregistry — the only thing that can create subnames. `mint(label, business, attestationHash)` (onlyRole `ISSUER_ROLE`) registers the subname to the business and calls `resolver.initIdentity` to stamp the locked `approved` status. `revoke` / `setStatus` flip status (no burn). `AccessControl`: `DEFAULT_ADMIN_ROLE` (cold) rotates the issuer; `ISSUER_ROLE` (hot) mints. | **LIVE** |
 | **KreditoResolver** (`kredito/`) | ENSv2 resolver (ENSIP-10 `resolve`, interface `0x9061b923`). Split-ACL records keyed by node — see below. | **LIVE** |
-| **KreditoVault** (`lendsignal/KreditoVault.sol`) | One contract = ERC-4626 LP vault **+** EIP-712 attestation-gated undercollateralized lender **+** ERC-7540 async redeem. Domain `"Kredito"/"1"` bound to `chainId` **and** `verifyingContract` (C-1). `Ownable2Step`, `ReentrancyGuard`, `Pausable`. 87 tests. | **BUILT, NOT deployed** |
+| **KreditoVault** (`lendsignal/KreditoVault.sol`) | One contract = ERC-4626 LP vault **+** EIP-712 attestation-gated undercollateralized lender **+** ERC-7540 async redeem. Domain `"Kredito"/"1"` bound to `chainId` **and** `verifyingContract` (C-1). `Ownable2Step`, `ReentrancyGuard`, `Pausable`. 87 tests. Installment lender; `minScore = 600`, asset = Circle Sepolia USDC. | **LIVE** (`0xd09e…e5cc`, via `DeployKreditoFullStack.s.sol`; unseeded — LPs supply USDC) |
 | **KreditoCreditVault** (`lendsignal/`) | Superseded by `KreditoVault`. | **deprecated** |
 | **YourContract** | SE-2 template scaffold. | **deprecated** |
 
@@ -142,14 +142,15 @@ ERC-4337 smart wallet. All gas is sponsored by Privy's **managed paymaster** dra
 > Do **not** use `useScaffoldWriteContract` for user writes — it signs from the embedded EOA and is
 > **not** sponsored. See `docs/privy.md`.
 
-## What's deployed vs deferred
+## What's deployed
 
-| Live on Sepolia | Built, not deployed |
-|-----------------|---------------------|
-| KreditoController, KreditoResolver, subRegistry, parent `kredito.eth` | KreditoVault (borrow + ERC-4626 + ERC-7540 redeem) |
-| Steps 1–4 of the flow (score, attest, mint identity, profile) | Steps 5–6 (borrow, liquidity) — gated on `NEXT_PUBLIC_KREDITO_VAULT` |
+| Live on Sepolia | Pending |
+|-----------------|---------|
+| KreditoController, KreditoResolver, subRegistry, parent `kredito.eth` | — |
+| KreditoVault (borrow + ERC-4626 + ERC-7540 redeem), KreditoInsurancePool | Borrow disbursal — vault is unseeded until an LP supplies USDC |
+| Steps 1–6 of the flow (score, attest, mint identity, profile, borrow, liquidity) | — |
 
-Live addresses, deploy commands, and the next-deploy plan: **`docs/deployments.md`**.
+All steps render live onchain panels. Live addresses + deploy commands: **`docs/deployments.md`**.
 
 ## Onchain rules (non-negotiable — from ethskills)
 

@@ -92,9 +92,10 @@ KreditoVault.borrow(att, sig, amount)   — borrower relays it; the vault:
 ## Related contracts / files
 
 - `packages/foundry/contracts/lendsignal/KreditoVault.sol` — ERC-4626 + ERC-7540 async-redeem vault
-  that verifies the EIP-712 signature and gates `borrow`. **Built (87 tests), NOT yet deployed**; it
-  supersedes the earlier `KreditoCreditVault.sol`. `NEXT_PUBLIC_KREDITO_VAULT` must be set to its
-  address for the attest route to bind the domain.
+  that verifies the EIP-712 signature and gates `borrow`. **Built (87 tests) and deployed on Sepolia
+  at `0xd09ecaa42eeb68c5a638d7556c41d62c38dbe5cc`** (via `script/DeployKreditoFullStack.s.sol`); it
+  supersedes the earlier `KreditoCreditVault.sol`. `NEXT_PUBLIC_KREDITO_VAULT` is set to its address
+  so the attest route binds the domain.
 - `packages/nextjs/kredito/attestation.ts` — domain / types / struct + `typedData` helper
   (client-safe; mirrors the contract).
 - `packages/nextjs/app/api/lendsignal/attest/route.ts` — issuer signing endpoint (`nodejs` runtime).
@@ -102,7 +103,8 @@ KreditoVault.borrow(att, sig, amount)   — borrower relays it; the vault:
 
 ## Status
 
-Borrow (vault) and the LP liquidity side are **DEFERRED** — the vault is built and tested but not
-deployed, so `/api/lendsignal/attest` returns `vault_not_configured` until `NEXT_PUBLIC_KREDITO_VAULT`
-points at a live deployment. The scoring → identity-mint path (which reuses the same issuer key) is
-live on Sepolia.
+Borrow (vault) and the LP liquidity side are **LIVE on Sepolia** — the vault is deployed at
+`0xd09ecaa42eeb68c5a638d7556c41d62c38dbe5cc`, so `/api/lendsignal/attest` binds the domain to it and
+signs real borrow credentials. The vault is **unseeded**, so an LP must supply USDC (via the app's
+Liquidity step) before a borrow can actually disburse. The scoring → identity-mint path (which
+reuses the same issuer key) is live on Sepolia too.

@@ -6,7 +6,7 @@ Built on **Scaffold-ETH 2** (Next.js App Router + Foundry monorepo) with an **AI
 
 > Built on the [AI-Native Web3 App template](https://github.com/Ekinoxis-evm/ai_scafolding_web3_app). New here? Read this, then [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`docs/architecture.md`](docs/architecture.md).
 
-> **TL;DR** — `yarn install && git submodule update --init --recursive` → set Privy + Supabase + Alchemy keys → `yarn start`. ENS contracts are already live on Sepolia; the vault is built but not yet deployed. Authorize MCPs with `/mcp`.
+> **TL;DR** — `yarn install && git submodule update --init --recursive` → set Privy + Supabase + Alchemy keys → `yarn start`. ENS contracts, the lending vault, and the insurance pool are all live on Sepolia (the vault is unseeded — LPs supply USDC in-app before borrows can disburse). Authorize MCPs with `/mcp`.
 
 ## The flow — credit → identity → loan
 
@@ -18,10 +18,10 @@ A single page (`packages/nextjs/components/kredito/KreditoFlow.tsx`) walks the b
 | 2 | **Score** | `POST /api/lendsignal/score` — the **Chainlink Confidential AI Attester** analyzes the uploaded documents inside a TEE (raw docs never leave the enclave or hit the DB) via a **map → reduce** pipeline (one inference per document → a final decision). The combined **score (0–1000)** *is* the AI score — there is no credit-bureau blend, no off-chain profile signal, and no synthetic fallback. Persisted to Supabase `credit_checks` (**results + hashes only**). If `CHAINLINK_CONFIDENTIAL_AI_API_KEY` is missing or any inference fails/returns unparseable output, the route returns a **clear error** (never a fake score). |
 | 3 | **Certificate** | Issuer signs an **EIP-712 `CreditAttestation`** server-side (`POST /api/lendsignal/attest`) — its `maxPrincipal` (the credit limit) is **derived from the score** (`creditLimitUsd`), not user-entered — then mints `<label>.kredito.eth`: the user signs the mint message → `POST /api/identity/mint` → `KreditoController.mint(label, wallet, attestationHash)`, issuer-submitted and **Privy-sponsored**. The issuer locks `kredito.status = approved` + the attestation hash; the user owns the name and its editable profile records. |
 | 4 | **Profile** | Customize the public ENS credit identity (display name, about, avatar, banner, website, email, location, X / GitHub / Telegram / Discord / LinkedIn). Records are written onchain via `KreditoResolver.setTexts` (gas-sponsored) and mirrored to Supabase `ens_identities`; a live preview card renders as you type. Public verification at `/identity/<label>` and a `/verify` lookup page. |
-| 5 | **Borrow** | `KreditoVault.borrow(attestation, sig, amount)` — the vault verifies the EIP-712 signature **onchain** (signer == issuer), checks score / expiry / max principal, then releases USDC. **Coming soon:** the vault is built and tested but **not yet deployed**. |
-| 6 | **Liquidity** | ERC-4626 deposit + **ERC-7540 async redeem** (request → fulfill → claim) for lenders. **Coming soon** alongside the vault. |
+| 5 | **Borrow** | `KreditoVault.borrow(attestation, sig, amount, term)` — the vault verifies the EIP-712 signature **onchain** (signer == issuer), checks score / expiry / max principal, then releases USDC as an installment loan over the chosen term. **Live on Sepolia** (borrow gate `minScore` 600); the vault is unseeded, so it can't disburse until an LP supplies USDC (step 6). |
+| 6 | **Liquidity** | ERC-4626 deposit + **ERC-7540 async redeem** (request → fulfill → claim) for lenders. **Live on Sepolia** — LPs supply USDC here (the app shows a funding panel + a "get test USDC" faucet link) to fund borrows. |
 
-Eligibility for identity minting: tiers are `>=750` low · `400–749` medium · `<400` high; `eligible = score >= 400 AND tier != high`. Eligibility is **recomputed** from the stored score + tier against `MIN_ELIGIBLE_SCORE` (400), not a persisted flag. The deployed `KreditoVault` enforces a stricter `minScore` (currently 600) for `borrow`, so off-chain mint eligibility (≥400) and the onchain borrow gate differ; borrow is deferred until an LP seeds the vault.
+Eligibility for identity minting: tiers are `>=750` low · `400–749` medium · `<400` high; `eligible = score >= 400 AND tier != high`. Eligibility is **recomputed** from the stored score + tier against `MIN_ELIGIBLE_SCORE` (400), not a persisted flag. The deployed `KreditoVault` enforces a stricter `minScore` (currently 600) for `borrow`, so off-chain mint eligibility (≥400) and the onchain borrow gate differ; borrow is live on Sepolia but pending liquidity until an LP seeds the vault.
 
 ## Onchain state
 
@@ -177,7 +177,7 @@ packages/
     scaffold.config.ts    # targetNetworks (Sepolia), polling, RPC overrides
   foundry/                # Foundry project
     contracts/kredito/    # KreditoController.sol, KreditoResolver.sol
-    contracts/lendsignal/ # KreditoVault.sol (ERC-4626 + ERC-7540, built & tested, not deployed)
+    contracts/lendsignal/ # KreditoVault.sol + KreditoInsurancePool.sol (ERC-4626 + ERC-7540, live on Sepolia)
     script/SetupKreditoEns.s.sol  # deploys + wires the ENSv2 controller/resolver/registry
     test/  lib/(submodules)
     foundry.toml          # tuned: reproducible bytecode + Etherscan V2 multichain verify
@@ -192,7 +192,7 @@ CLAUDE.md  AGENTS.md       # project memory (CLAUDE.md imports AGENTS.md)
 
 ## 7 · Deploy
 - **ENS contracts** → `forge script script/SetupKreditoEns.s.sol --rpc-url sepolia --account kredito-issuer --broadcast` (already live; re-run only to redeploy). Re-verify with `/verify-contract`.
-- **Vault** → not yet deployed; build a deploy script and gate it through `/ship-check` first.
+- **Vault + insurance pool** → deployed on Sepolia (`0xd09e…` / `0xfaf6…`) via `script/DeployKreditoFullStack.s.sol`; re-run only to redeploy, gated through `/ship-check` first.
 - **Frontend** → `yarn vercel` (or `yarn vercel:yolo --prod`) or the `vercel` MCP. Pull env with `vercel env pull`.
 - **Services/indexers** → Railway (`railway` MCP).
 

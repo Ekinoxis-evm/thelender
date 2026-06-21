@@ -14,7 +14,8 @@ Live onchain addresses, the roles they hold, deploy commands, and env mapping. *
 | **KreditoController** | `0xE498cbC0F0ED0b9059FEc2a7F1275834108915B0` | Issuance authority. Holds `ROLE_REGISTRAR` on the subRegistry; mints `<label>.kredito.eth` (onlyRole `ISSUER_ROLE`). | [↗](https://eth-sepolia.blockscout.com/address/0xE498cbC0F0ED0b9059FEc2a7F1275834108915B0) |
 | **KreditoResolver** | `0xE68F49F6256a2aF1702855dc62B82afF6Fd65F0E` | ENSv2 split-ACL resolver (ENSIP-10). Issuer = the controller. | [↗](https://eth-sepolia.blockscout.com/address/0xE68F49F6256a2aF1702855dc62B82afF6Fd65F0E) |
 | **subRegistry** | `0x2167d6DF85bC76f22b7f150220740444DC257AAf` | Our ENSv2 UserRegistry proxy under `kredito.eth`. Controller holds `ROLE_REGISTRAR`; deployer is root admin. | [↗](https://eth-sepolia.blockscout.com/address/0x2167d6DF85bC76f22b7f150220740444DC257AAf) |
-| **KreditoVault** | *not deployed* | ERC-4626 + EIP-712 attestation-gated lender + ERC-7540 async redeem. Built (87 tests). See "To deploy next". | — |
+| **KreditoVault** | `0xd09ecaa42eeb68c5a638d7556c41d62c38dbe5cc` | ERC-4626 + EIP-712 attestation-gated installment lender + ERC-7540 async redeem. `minScore = 600`, `asset = Circle Sepolia USDC` (6 decimals), `issuer/owner = 0x4B24…6978`. **Unseeded** — LPs supply USDC via the app. | [↗](https://eth-sepolia.blockscout.com/address/0xd09ecaa42eeb68c5a638d7556c41d62c38dbe5cc) |
+| **KreditoInsurancePool** | `0xfaf6200ad67d3ac5e12807a23e20dfa96adca3c8` | ERC-4626 COVER reserve. Paid on default, fed the protocol fee; wired via `setInsurancePool` / `setVault`. | [↗](https://eth-sepolia.blockscout.com/address/0xfaf6200ad67d3ac5e12807a23e20dfa96adca3c8) |
 
 ## ENSv2 / Namechain infra (external, Sepolia)
 
@@ -49,7 +50,7 @@ For the hackathon, a single key wears every hat:
 | **deployer** | runs `SetupKreditoEns.s.sol` (Foundry `--account kredito-issuer`) |
 | **`DEFAULT_ADMIN_ROLE`** | cold admin on `KreditoController` (rotates issuer, tunes config) |
 | **`ISSUER_ROLE`** | hot key that calls `controller.mint` |
-| **vault issuer** | will sign EIP-712 `CreditAttestation`s for `KreditoVault` |
+| **vault issuer** | signs EIP-712 `CreditAttestation`s for `KreditoVault` (deployed) |
 | **app `ISSUER_PRIVATE_KEY`** | server signs attestations + submits `controller.mint` |
 | **`kredito.eth` owner** | signed the `setSubregistry` tx above |
 
@@ -107,43 +108,43 @@ What the script does (run by the deployer; needs no `kredito.eth` owner key):
 |---------|---------|---------|
 | `NEXT_PUBLIC_KREDITO_CONTROLLER` | `0xE498…15B0` (KreditoController) | `/api/identity/mint` (issuer submits `mint`) |
 | `NEXT_PUBLIC_KREDITO_RESOLVER` | `0xE68F…5F0E` (KreditoResolver) | ENS reads / identity lookup |
-| `NEXT_PUBLIC_KREDITO_VAULT` | *(unset — vault not deployed)* | borrow/liquidity steps + `/api/lendsignal/attest` (`verifyingContract`) |
+| `NEXT_PUBLIC_KREDITO_VAULT` | `0xd09e…e5cc` (KreditoVault) | borrow/liquidity steps + `/api/lendsignal/attest` (`verifyingContract`) |
+| `NEXT_PUBLIC_KREDITO_INSURANCE` | `0xfaf6…a3c8` (KreditoInsurancePool) | insurance/cover reserve reads in the liquidity step |
 | `ISSUER_PRIVATE_KEY` | private key for `0x4B24…6978` | server-side: signs EIP-712 attestations, submits `controller.mint`. **Secret — env only.** |
 | `KREDITO_ISSUER` | issuer address (defaults to deployer) | `SetupKreditoEns.s.sol` (`ISSUER_ROLE` grant) |
 | `ALCHEMY_API_KEY` / `NEXT_PUBLIC_ALCHEMY_API_KEY` | Sepolia RPC | server clients (falls back to publicnode) |
 | `NEXT_PUBLIC_SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` | Supabase ref `rooclfwqvmwehaqmtflp` | `credit_checks` / `ens_identities` persistence |
 | `CHAINLINK_CONFIDENTIAL_AI_API_KEY` (+ `_BASE_URL`) | Confidential AI Attester | `/api/lendsignal/score`; unset → deterministic mock (`attested:false`) |
 
-## To deploy next: KreditoVault
+## KreditoVault + InsurancePool (deployed)
 
-`packages/foundry/contracts/lendsignal/KreditoVault.sol` is built and tested (87 tests) but **not yet
-deployed**. Until it is, the Borrow + Liquidity steps render a "Vault not configured" panel.
+`packages/foundry/contracts/lendsignal/KreditoVault.sol` (built + tested, 87 tests) is **live on
+Sepolia** at `0xd09ecaa42eeb68c5a638d7556c41d62c38dbe5cc`, alongside `KreditoInsurancePool` at
+`0xfaf6200ad67d3ac5e12807a23e20dfa96adca3c8`. Both were deployed via
+`script/DeployKreditoFullStack.s.sol`, which deploys the vault + insurance pool and wires them
+together (`setInsurancePool` / `setVault`).
 
-Deploy scripts exist: `script/DeployKreditoVault.s.sol` and `script/DeployKreditoVaultV2.s.sol`
-(V2 resolves the USDC asset by chainId).
+Key vault config: `minScore = 600`, `asset = Circle Sepolia USDC` (`0x1c7D4B196Cb0C7B01d743Fbc6116a902379C7238`,
+6 decimals), `issuer = owner = 0x4B24116Df4C31c40aB5B3cb3bA3Ffe743A346978`. The vault is **unseeded** —
+it holds no liquidity yet; LPs supply USDC through the app's Liquidity step (which shows a funding
+panel + a "get test USDC" faucet link), so Borrow can't disburse until someone supplies liquidity.
+
+How it was deployed (and how to redeploy — gate through `/ship-check` first):
 
 ```bash
-# Deploy + verify the vault on Sepolia (resolves USDC by chainId).
-forge script script/DeployKreditoVaultV2.s.sol --rpc-url sepolia --account kredito-issuer --broadcast --verify
+# Deploy + verify the full stack (vault + insurance pool) on Sepolia.
+forge script script/DeployKreditoFullStack.s.sol --rpc-url sepolia --account kredito-issuer --broadcast --verify
 # (or via SE-2 wrapper)
-yarn deploy --file DeployKreditoVaultV2.s.sol --network sepolia
+yarn deploy --file DeployKreditoFullStack.s.sol --network sepolia
 ```
 
-Post-deploy checklist:
+On a redeploy, mind:
 
-1. **Set `NEXT_PUBLIC_KREDITO_VAULT`** to the deployed vault address (frontend + Vercel env). This
-   unlocks the borrow/liquidity steps **and** is the `verifyingContract` the attestation signer binds
-   (C-1) — `/api/lendsignal/attest` returns `vault_not_configured` until it's set.
+1. **Update `NEXT_PUBLIC_KREDITO_VAULT` / `NEXT_PUBLIC_KREDITO_INSURANCE`** (frontend + Vercel env) to
+   the new addresses. The vault address is the `verifyingContract` the attestation signer binds (C-1) —
+   `/api/lendsignal/attest` returns `vault_not_configured` if it's unset.
 2. **Confirm the issuer.** The vault's attestation signer must equal `ISSUER_PRIVATE_KEY`'s address
    (`0x4B24…6978` in the demo).
-3. **Verify decimals.** Asset is 6-decimal mUSDC (1 unit == $1 in the demo); `maxPrincipal` is in base
-   units.
-4. **Seed liquidity.** LPs `deposit` mUSDC so `idleLiquidity()` can cover borrows.
-5. **Record it here** — add the address + Blockscout link to the table at the top and flip its status
-   to LIVE.
-
-Add the address to this registry once live:
-
-```
-| **KreditoVault** | `0x…` | ERC-4626 + attestation-gated lender + ERC-7540 redeem | [↗](https://eth-sepolia.blockscout.com/address/0x…) |
-```
+3. **Verify decimals.** Asset is 6-decimal Circle USDC; `maxPrincipal` is in base units.
+4. **Seed liquidity.** LPs `deposit` USDC so `idleLiquidity()` can cover borrows.
+5. **Record it here** — update the addresses + Blockscout links in the table at the top.
