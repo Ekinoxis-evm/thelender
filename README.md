@@ -21,7 +21,7 @@ A single page (`packages/nextjs/components/kredito/KreditoFlow.tsx`) walks the b
 | 5 | **Borrow** | `KreditoVault.borrow(attestation, sig, amount)` — the vault verifies the EIP-712 signature **onchain** (signer == issuer), checks score / expiry / max principal, then releases USDC. **Coming soon:** the vault is built and tested but **not yet deployed**. |
 | 6 | **Liquidity** | ERC-4626 deposit + **ERC-7540 async redeem** (request → fulfill → claim) for lenders. **Coming soon** alongside the vault. |
 
-Eligibility for identity minting: tiers are `>=750` low · `600–749` medium · `<600` high; `eligible = score >= 600 AND tier != high` (threshold lowered to 600). Eligibility is **recomputed** from the stored score + tier against `MIN_ELIGIBLE_SCORE` (600), not a persisted flag. The (undeployed) `KreditoVault` still hardcodes a higher `minScore` for `borrow`, so off-chain mint eligibility (≥600) and the future onchain borrow gate may differ; borrow is deferred.
+Eligibility for identity minting: tiers are `>=750` low · `400–749` medium · `<400` high; `eligible = score >= 400 AND tier != high`. Eligibility is **recomputed** from the stored score + tier against `MIN_ELIGIBLE_SCORE` (400), not a persisted flag. The deployed `KreditoVault` enforces a stricter `minScore` (currently 600) for `borrow`, so off-chain mint eligibility (≥400) and the onchain borrow gate differ; borrow is deferred until an LP seeds the vault.
 
 ## Onchain state
 
@@ -31,7 +31,8 @@ Eligibility for identity minting: tiers are `>=750` low · `600–749` medium ·
 | `KreditoResolver` | `0xE68F49F6256a2aF1702855dc62B82afF6Fd65F0E` | **Live** |
 | subRegistry (ENSv2 `UserRegistry` proxy) | `0x2167d6DF85bC76f22b7f150220740444DC257AAf` | **Live** |
 | parent `kredito.eth` | on ENSv2 / Namechain Sepolia | **Live** |
-| `KreditoVault` | — | **Built & tested, not deployed** |
+| `KreditoVault` | `0xd09ecaa42eeb68c5a638d7556c41d62c38dbe5cc` | **Live** (unseeded — `minScore` 600; borrow needs an LP first) |
+| Insurance pool | `0xfaf6200ad67d3ac5e12807a23e20dfa96adca3c8` | **Live** |
 
 The ENS contracts are wired into the frontend via env (`NEXT_PUBLIC_KREDITO_CONTROLLER` / `NEXT_PUBLIC_KREDITO_RESOLVER`) — they are **not** in the auto-generated `deployedContracts.ts`. Issuer, deployer, and owner are currently one key (the Foundry keystore `kredito-issuer`); production would split a cold owner from a hot issuer.
 

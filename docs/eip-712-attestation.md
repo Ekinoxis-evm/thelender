@@ -76,7 +76,7 @@ POST /api/lendsignal/attest      (server, ISSUER_PRIVATE_KEY — never reaches t
         ▼
 KreditoVault.borrow(att, sig, amount)   — borrower relays it; the vault:
         recoverIssuer(att, sig) == issuer   (isEligible)
-        att.score >= minScore (default 750), riskTier != 0 (not high risk)
+        att.score >= minScore (currently 600), riskTier != 0 (not high risk)
         _assertFreshness (issued ≤ now < expiry, window ≤ MAX_ATTESTATION_TTL)
         amount <= att.maxPrincipal, amount <= idleLiquidity(), no open loan
         burns the attestation (attestationUsed[digest]) → one-time use, then disburses asset

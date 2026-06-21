@@ -39,8 +39,8 @@ through Docling preprocessing in the TEE and can take minutes — the demo prefe
 
 The combined score **is** the AI score (`combinedScore === aiScore` in
 `services/lendsignal/score.ts`): there is **no** credit-bureau blend, **no** off-chain profile signal,
-and **no** 70/30 weighting. Tiers are `>=750` low · `600–749` medium · `<600` high, and
-`eligible = score >= 600 && tier != high` (`MIN_ELIGIBLE_SCORE = 600`).
+and **no** 70/30 weighting. Tiers are `>=750` low · `400–749` medium · `<400` high, and
+`eligible = score >= 400 && tier != high` (`MIN_ELIGIBLE_SCORE = 400`).
 
 The normalized check is persisted to Supabase (`credit_checks`, best-effort — never blocks the
 response). The combined score and risk tier then feed the issuer's EIP-712 attestation (see
