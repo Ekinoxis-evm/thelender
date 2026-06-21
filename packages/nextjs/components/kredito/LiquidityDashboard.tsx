@@ -5,6 +5,7 @@ import { encodeFunctionData, formatUnits, parseUnits } from "viem";
 import { useReadContract } from "wagmi";
 import {
   ArrowLeftIcon,
+  ArrowTopRightOnSquareIcon,
   BanknotesIcon,
   DocumentDuplicateIcon,
   ShieldCheckIcon,
@@ -250,6 +251,11 @@ export const LiquidityDashboard = ({
     if (!lp) return;
     navigator.clipboard?.writeText(lp);
     notification.success("Smart wallet address copied");
+  };
+  const copyAsset = () => {
+    if (!assetAddr) return;
+    navigator.clipboard?.writeText(assetAddr);
+    notification.success(`${sym} token address copied`);
   };
 
   const supply = async () => {
@@ -527,9 +533,32 @@ export const LiquidityDashboard = ({
                   {usd(walletBalBig)} {sym}
                 </span>
               </div>
-              <p className="text-xs text-base-content/50 mt-1.5">
-                Send Sepolia {sym} to this address to supply. Gas for every action is sponsored.
-              </p>
+              <div className="mt-1.5 flex flex-col gap-1 text-xs text-base-content/50">
+                <p>Send Sepolia {sym} to this address to supply. Gas for every action is sponsored.</p>
+                {assetAddr && (
+                  <p className="flex flex-wrap items-center gap-1.5">
+                    <span>
+                      Must be {sym} at{" "}
+                      <code className="k-mono text-base-content/70">
+                        {assetAddr.slice(0, 6)}…{assetAddr.slice(-4)}
+                      </code>
+                    </span>
+                    <button type="button" onClick={copyAsset} className="btn btn-ghost btn-xs px-1">
+                      <DocumentDuplicateIcon aria-hidden="true" className="h-3 w-3" />
+                    </button>
+                    <span aria-hidden="true">·</span>
+                    <a
+                      href="https://faucet.circle.com"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="link inline-flex items-center gap-0.5"
+                    >
+                      get test {sym}
+                      <ArrowTopRightOnSquareIcon aria-hidden="true" className="h-3 w-3" />
+                    </a>
+                  </p>
+                )}
+              </div>
             </Panel>
 
             {/* Supply + withdraw actions. Withdraw panels appear only once you hold a position. */}
