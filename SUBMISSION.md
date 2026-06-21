@@ -69,7 +69,8 @@ All user writes go through the sponsored smart wallet (`useSponsoredWrite`); mes
 | KreditoController | `0xE498cbC0F0ED0b9059FEc2a7F1275834108915B0` |
 | KreditoResolver | `0xE68F49F6256a2aF1702855dc62B82afF6Fd65F0E` |
 | subRegistry (UserRegistry) | `0x2167d6DF85bC76f22b7f150220740444DC257AAf` |
-| KreditoVault (EIP-712 attestation-gated ERC-4626 + ERC-7540) | `0x154fb3caf1e2f578629c097321ecda035cd2a8a1` |
+| KreditoVault (EIP-712 attestation-gated ERC-4626 + ERC-7540 installment lender) | `0xd09ecaa42eeb68c5a638d7556c41d62c38dbe5cc` |
+| KreditoInsurancePool (ERC-4626 COVER reserve, paid on default) | `0xfaf6200ad67d3ac5e12807a23e20dfa96adca3c8` |
 | Parent `kredito.eth` `.eth` PermissionedRegistry | `0xDEDB92913A25abE1f7BCDD85D8A344a43B398B67` |
 
 Stack: Scaffold-ETH 2 (Next.js + Foundry) · Privy · Chainlink Confidential AI · ENSv2 · Supabase · Vercel.
