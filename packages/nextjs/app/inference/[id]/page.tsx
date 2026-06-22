@@ -1,6 +1,6 @@
 "use client";
 
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { ArrowLeftIcon, CheckCircleIcon, ShieldCheckIcon } from "@heroicons/react/24/outline";
@@ -67,16 +67,6 @@ export default function InferencePage() {
     };
   }, [id]);
 
-  // The model output is a JSON string — parse it for a clean render, fall back to raw.
-  const parsedOutput = useMemo(() => {
-    if (!data?.output) return null;
-    try {
-      return JSON.parse(data.output) as Record<string, unknown>;
-    } catch {
-      return null;
-    }
-  }, [data]);
-
   return (
     <div className="mx-auto max-w-4xl px-4 sm:px-5 py-8 w-full">
       <Link href="/" className="btn btn-ghost btn-sm gap-1 mb-4">
@@ -86,7 +76,7 @@ export default function InferencePage() {
       <PageHeader
         eyebrow="Chainlink Confidential AI Attester"
         title="Attested inference"
-        subtitle="This request ran inside an AWS Nitro Enclave (TEE). Chainlink returns the model output plus cryptographic digests that bind the exact model, prompt, input document and output — so anyone can verify what ran on what data, without the raw document ever being exposed."
+        subtitle="This request ran inside an AWS Nitro Enclave (TEE). Chainlink returns cryptographic digests that bind the exact model, prompt, input document and output — so anyone can verify what ran on what data, without exposing the raw document or the borrower's private assessment. The plaintext analysis stays confidential to the borrower."
       />
 
       {loading && <div className="loading loading-spinner loading-lg text-primary mx-auto block mt-10" />}
@@ -195,57 +185,21 @@ export default function InferencePage() {
             </div>
           </Panel>
 
-          {/* Model output */}
-          <Panel eyebrow="Model output" title="What the model returned">
-            {parsedOutput ? (
-              <div className="divide-y divide-base-300">
-                {Object.entries(parsedOutput).map(([k, v]) => (
-                  <div key={k} className="flex items-start justify-between gap-4 py-2 text-sm">
-                    <span className="k-mono text-base-content/60 shrink-0">{k}</span>
-                    <span className="text-right">
-                      {typeof v === "boolean" ? (
-                        <span className={`badge badge-sm ${v ? "badge-success" : "badge-error"}`}>{String(v)}</span>
-                      ) : typeof v === "object" ? (
-                        <code className="k-mono text-xs">{JSON.stringify(v)}</code>
-                      ) : (
-                        <span>{String(v)}</span>
-                      )}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
+          {/* The model output + prompts are intentionally NOT shown here — they are the borrower's
+              confidential assessment. This public page proves WHAT ran (model + digests) without
+              revealing the content; the borrower sees their full analysis in "My evaluations". */}
+          {data.error && (
+            <Panel eyebrow="Status" title="Request error">
               <pre className="k-mono text-xs whitespace-pre-wrap break-words bg-base-200 rounded-box p-3">
-                {data.output ?? data.error ?? "—"}
+                {data.error}
               </pre>
-            )}
-          </Panel>
-
-          {/* The prompt that was attested */}
-          {(data.system_prompt || data.prompt) && (
-            <Panel eyebrow="Inputs" title="Prompt (attested)">
-              {data.system_prompt && (
-                <div className="mb-3">
-                  <p className="k-eyebrow mb-1">System prompt</p>
-                  <pre className="k-mono text-xs whitespace-pre-wrap break-words bg-base-200 rounded-box p-3">
-                    {data.system_prompt}
-                  </pre>
-                </div>
-              )}
-              {data.prompt && (
-                <div>
-                  <p className="k-eyebrow mb-1">User prompt</p>
-                  <pre className="k-mono text-xs whitespace-pre-wrap break-words bg-base-200 rounded-box p-3">
-                    {data.prompt}
-                  </pre>
-                </div>
-              )}
             </Panel>
           )}
 
           <p className="text-xs text-base-content/45 flex items-center gap-1">
             <CheckCircleIcon className="h-4 w-4 text-success" />
-            Served via /api/lendsignal/inference — the API key stays server-side; the raw document is never returned.
+            Served via /api/lendsignal/inference — the API key stays server-side; the raw document and the private
+            analysis are never returned. Only the cryptographic proof is public.
           </p>
         </div>
       )}
