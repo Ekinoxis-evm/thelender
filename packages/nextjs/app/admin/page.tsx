@@ -40,7 +40,9 @@ export default function AdminPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    const s = localStorage.getItem("kredito_admin_secret");
+    // sessionStorage (not localStorage): the admin secret is cleared when the tab closes, shrinking
+    // the window an XSS/shared-browser could exfiltrate it. (Production: swap for an httpOnly cookie.)
+    const s = sessionStorage.getItem("kredito_admin_secret");
     if (s) setSecret(s);
   }, []);
 
@@ -51,7 +53,7 @@ export default function AdminPage() {
       const r = await fetch("/api/admin", { headers: { "x-admin-secret": secret } });
       if (!r.ok) throw new Error(r.status === 401 ? "Wrong admin secret" : "Failed to load");
       const j: Data = await r.json();
-      localStorage.setItem("kredito_admin_secret", secret);
+      sessionStorage.setItem("kredito_admin_secret", secret);
       setData(j);
       setCfg(j.aiConfig);
     } catch (e) {

@@ -16,9 +16,11 @@ import {
   fileToBase64,
 } from "~~/components/kredito/flowBits";
 import { useKreditoIdentity } from "~~/hooks/scaffold-eth/useKreditoIdentity";
+import { useSmartWalletSign } from "~~/hooks/scaffold-eth/useSmartWallet";
 import { type StoredScore, saveScoreResult } from "~~/kredito/scoreStore";
 import { useKreditoWallet } from "~~/kredito/useWallet";
 import { COUNTRIES, ENTERPRISE_TYPES } from "~~/lib/countries";
+import { scoreMessage } from "~~/lib/kredito";
 import type { UploadedDocument } from "~~/services/lendsignal/types";
 import { notification } from "~~/utils/scaffold-eth";
 
@@ -61,6 +63,7 @@ export const OnboardingSection = ({
   onScored: (result: StoredScore) => void;
 }) => {
   const { address, isSmartWallet } = useKreditoWallet();
+  const signMessage = useSmartWalletSign();
   const { identity: walletIdentity } = useKreditoIdentity(address ?? undefined);
 
   const [docs, setDocs] = useState<Record<string, UploadedDocument | null>>({});
@@ -108,6 +111,20 @@ export const OnboardingSection = ({
       notification.error("Upload at least one business document to run the credit check.");
       return;
     }
+    if (!address) {
+      notification.error("Connect your wallet to run the credit check.");
+      return;
+    }
+
+    // Prove wallet control once — binds the assessment + its AI inferences to this wallet (server
+    // rejects scoring under a wallet you don't control). Sent to both submit and finish.
+    let signature: `0x${string}`;
+    try {
+      signature = await signMessage(scoreMessage(address));
+    } catch {
+      notification.error("Signature required to start your confidential credit check.");
+      return;
+    }
 
     const apiProfile = {
       legalName: profile.legalName,
@@ -126,7 +143,7 @@ export const OnboardingSection = ({
       const submitRes = await fetch("/api/lendsignal/score/submit", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ profile: apiProfile, documents: uploadedDocs }),
+        body: JSON.stringify({ profile: apiProfile, documents: uploadedDocs, borrower: address, signature }),
       });
       const submitJson = await submitRes.json();
       if (!submitRes.ok)
@@ -191,6 +208,7 @@ export const OnboardingSection = ({
         body: JSON.stringify({
           profile: apiProfile,
           borrower: address,
+          signature,
           docs: submitted.map(d => ({
             filename: d.filename,
             type: d.type,

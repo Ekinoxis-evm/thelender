@@ -81,6 +81,13 @@ export const mintMessage = (wallet: string, normalizedLabel: string) =>
 export const attestMessage = (wallet: string) => `KreditoOne — request credit attestation\nwallet: ${wallet}`;
 
 /**
+ * Challenge a wallet signs to run a credit assessment. Binds the resulting credit_check (and the
+ * paid Confidential AI inferences it triggers) to a wallet the caller actually controls — so a check
+ * can't be stored under someone else's address and anonymous callers can't burn the AI budget.
+ */
+export const scoreMessage = (wallet: string) => `KreditoOne — run credit assessment\nwallet: ${wallet}`;
+
+/**
  * Edit-profile challenge. Binds the wallet, the label, a digest of the exact profile content, AND a
  * timestamp — so a captured signature can't be replayed to set DIFFERENT content (content-bound) and
  * is only valid briefly (TTL enforced server-side). See profileDigest().

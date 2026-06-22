@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isAddress } from "viem";
+import { scoreMessage } from "~~/lib/kredito";
 import { getAiConfig } from "~~/services/kredito/admin";
+import { verifyWalletControl } from "~~/services/kredito/verifyWallet";
 import { isConfidentialAiConfigured, submitInference } from "~~/services/lendsignal/confidentialAi";
 import { SECTION_FOCUS, buildSectionPrompt, detectSection } from "~~/services/lendsignal/prompt";
 import type { BusinessProfile, UploadedDocument } from "~~/services/lendsignal/types";
@@ -24,6 +27,8 @@ export const dynamic = "force-dynamic";
 type RequestBody = {
   profile: BusinessProfile;
   documents?: UploadedDocument[];
+  borrower?: string;
+  signature?: `0x${string}`;
 };
 
 export type SubmittedDoc = {
@@ -43,11 +48,23 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "invalid_request", message: "Body must be JSON." }, { status: 400 });
   }
 
-  const { profile } = body;
+  const { profile, borrower } = body;
   if (!profile?.legalName || !profile?.country) {
     return NextResponse.json(
       { error: "invalid_request", message: "profile.legalName and profile.country are required." },
       { status: 400 },
+    );
+  }
+
+  // AuthZ: bind this assessment (and the paid AI inferences it triggers) to a wallet the caller
+  // controls. Prevents storing a check under someone else's address and anonymous AI-budget abuse.
+  if (!borrower || !isAddress(borrower)) {
+    return NextResponse.json({ error: "invalid_request", message: "Valid borrower required." }, { status: 400 });
+  }
+  if (!(await verifyWalletControl(borrower as `0x${string}`, scoreMessage(borrower), body.signature))) {
+    return NextResponse.json(
+      { error: "unauthorized", message: "Signature does not prove control of the wallet." },
+      { status: 401 },
     );
   }
 

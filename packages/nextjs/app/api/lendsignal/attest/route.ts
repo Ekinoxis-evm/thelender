@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Hex, createPublicClient, hashTypedData, http, isAddress } from "viem";
+import { type Hex, hashTypedData, isAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
-import { sepolia } from "viem/chains";
 import { type CreditAttestation, MAX_ATTESTATION_TTL_SECONDS, riskTierToUint, typedData } from "~~/kredito/attestation";
 import { KREDITO_VAULT_ADDRESS } from "~~/kredito/vault";
 import { attestMessage, creditLimitUsd } from "~~/lib/kredito";
 import { getAttestationInputs } from "~~/services/kredito/identities";
+import { verifyWalletControl } from "~~/services/kredito/verifyWallet";
 import { MIN_ELIGIBLE_SCORE, tierFromScore } from "~~/services/lendsignal/score";
 
 /**
@@ -21,11 +21,6 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ISSUER_PK = process.env.ISSUER_PRIVATE_KEY ?? "";
-
-function sepoliaRpc() {
-  const key = process.env.ALCHEMY_API_KEY ?? process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
-  return key ? `https://eth-sepolia.g.alchemy.com/v2/${key}` : "https://ethereum-sepolia-rpc.publicnode.com";
-}
 
 export async function POST(req: NextRequest) {
   if (!ISSUER_PK) {
@@ -56,16 +51,7 @@ export async function POST(req: NextRequest) {
 
   // AuthZ: prove control of `borrower` (EOA + Privy smart wallets via ERC-1271/6492). Without this,
   // anyone could request — and the issuer would sign — an attestation bound to any address.
-  const reader = createPublicClient({ chain: sepolia, transport: http(sepoliaRpc()) });
-  let proven = false;
-  if (signature) {
-    try {
-      proven = await reader.verifyMessage({ address: borrower, message: attestMessage(borrower), signature });
-    } catch {
-      proven = false;
-    }
-  }
-  if (!proven) {
+  if (!(await verifyWalletControl(borrower as `0x${string}`, attestMessage(borrower), signature))) {
     return NextResponse.json(
       { error: "unauthorized", message: "Signature does not prove control of the wallet." },
       { status: 401 },

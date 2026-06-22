@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Hex, createPublicClient, createWalletClient, http, isAddress, publicActions } from "viem";
+import { type Hex, createWalletClient, http, isAddress, publicActions } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { sepolia } from "viem/chains";
 import {
@@ -11,13 +11,9 @@ import {
   sanitizeProfile,
 } from "~~/lib/kredito";
 import { getDecision, insertIdentity, isLabelTaken } from "~~/services/kredito/identities";
+import { sepoliaRpc, verifyWalletControl } from "~~/services/kredito/verifyWallet";
 
 export const runtime = "nodejs";
-
-function sepoliaRpc() {
-  const key = process.env.ALCHEMY_API_KEY ?? process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
-  return key ? `https://eth-sepolia.g.alchemy.com/v2/${key}` : "https://ethereum-sepolia-rpc.publicnode.com";
-}
 
 /**
  * POST /api/identity/mint — the issuer (backend) mints `<label>.kredito.eth` to an APPROVED wallet.
@@ -43,18 +39,9 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: (e as Error).message }, { status: 400 });
   }
 
-  // AuthN: the caller must prove control of `wallet` by signing the bound message. verifyMessage
-  // handles EOA + Privy smart wallets (ERC-1271/6492). Mint is idempotent, so replay is harmless.
-  const reader = createPublicClient({ chain: sepolia, transport: http(sepoliaRpc()) });
-  let proven = false;
-  if (signature) {
-    try {
-      proven = await reader.verifyMessage({ address: wallet, message: mintMessage(wallet, label), signature });
-    } catch {
-      proven = false;
-    }
-  }
-  if (!proven) {
+  // AuthN: the caller must prove control of `wallet` by signing the bound message (EOA + Privy
+  // smart wallets via ERC-1271/6492). Mint is idempotent, so replay is harmless.
+  if (!(await verifyWalletControl(wallet as `0x${string}`, mintMessage(wallet, label), signature))) {
     return NextResponse.json({ error: "Signature does not prove control of the wallet" }, { status: 401 });
   }
 

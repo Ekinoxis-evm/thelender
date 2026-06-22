@@ -1,5 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
+import { isAddress } from "viem";
+import { scoreMessage } from "~~/lib/kredito";
 import { getAiConfig } from "~~/services/kredito/admin";
+import { verifyWalletControl } from "~~/services/kredito/verifyWallet";
 import { type InferenceSnapshot, getInference, runInference } from "~~/services/lendsignal/confidentialAi";
 import {
   type DocumentInferenceRow,
@@ -39,6 +42,7 @@ type RequestBody = {
   profile: BusinessProfile;
   borrower?: string;
   docs?: FinishDoc[];
+  signature?: `0x${string}`;
 };
 
 export async function POST(req: NextRequest) {
@@ -54,6 +58,17 @@ export async function POST(req: NextRequest) {
     return NextResponse.json(
       { error: "invalid_request", message: "profile.legalName and profile.country are required." },
       { status: 400 },
+    );
+  }
+
+  // AuthZ: the persisted credit_check is attributed to `borrower`; require proof the caller controls it.
+  if (!borrower || !isAddress(borrower)) {
+    return NextResponse.json({ error: "invalid_request", message: "Valid borrower required." }, { status: 400 });
+  }
+  if (!(await verifyWalletControl(borrower as `0x${string}`, scoreMessage(borrower), body.signature))) {
+    return NextResponse.json(
+      { error: "unauthorized", message: "Signature does not prove control of the wallet." },
+      { status: 401 },
     );
   }
 
