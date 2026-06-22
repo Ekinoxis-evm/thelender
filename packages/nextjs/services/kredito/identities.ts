@@ -48,6 +48,28 @@ export async function getDecision(wallet: string): Promise<CreditDecision | null
   };
 }
 
+/**
+ * SERVER-ONLY signing inputs for an issuer attestation, read from the wallet's latest credit_check.
+ * The score stays on the server — the attest route derives the SIGNED score/tier/maxPrincipal/evidence
+ * from this, never from the client. Returns null if there's no check or no evidence digest to bind to.
+ */
+export async function getAttestationInputs(
+  wallet: string,
+): Promise<{ score: number; evidenceDigest: `0x${string}` } | null> {
+  const db = createAdminClient();
+  const { data } = await db
+    .from("credit_checks")
+    .select("combined_score, evidence_digest")
+    .ilike("borrower", wallet)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  if (!data) return null;
+  const row = data as { combined_score: number | null; evidence_digest: string | null };
+  if (row.combined_score == null || !row.evidence_digest) return null;
+  return { score: row.combined_score, evidenceDigest: row.evidence_digest as `0x${string}` };
+}
+
 export async function getIdentityByWallet(wallet: string): Promise<EnsIdentity | null> {
   const db = createAdminClient();
   const { data } = await db.from("ens_identities").select("*").eq("wallet_address", wallet.toLowerCase()).maybeSingle();

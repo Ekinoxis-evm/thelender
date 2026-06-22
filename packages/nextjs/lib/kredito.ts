@@ -73,6 +73,14 @@ export const mintMessage = (wallet: string, normalizedLabel: string) =>
   `KreditoOne — claim credit identity\nname: ${normalizedLabel}.${KREDITO_PARENT_NAME}\nwallet: ${wallet}`;
 
 /**
+ * Challenge a wallet signs to request its issuer-signed credit attestation. Proves control of
+ * `wallet` so the server only ever attests the score that wallet actually earned (the score, tier,
+ * maxPrincipal and evidence digest are then read from the stored credit_check server-side — never
+ * from the request body). Replay is harmless: the issued attestation is bound to this same wallet.
+ */
+export const attestMessage = (wallet: string) => `KreditoOne — request credit attestation\nwallet: ${wallet}`;
+
+/**
  * Edit-profile challenge. Binds the wallet, the label, a digest of the exact profile content, AND a
  * timestamp — so a captured signature can't be replayed to set DIFFERENT content (content-bound) and
  * is only valid briefly (TTL enforced server-side). See profileDigest().

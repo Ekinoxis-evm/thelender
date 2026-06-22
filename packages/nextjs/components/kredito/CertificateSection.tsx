@@ -16,7 +16,7 @@ import { useSmartWalletSign } from "~~/hooks/scaffold-eth/useSmartWallet";
 import { typedData } from "~~/kredito/attestation";
 import { type StoredScore, toCertificate } from "~~/kredito/scoreStore";
 import { KREDITO_VAULT_ADDRESS, type SignedAttestation, sepoliaTxUrl } from "~~/kredito/vault";
-import { creditLimitUsd, fullName, mintMessage, normalizeLabel } from "~~/lib/kredito";
+import { attestMessage, creditLimitUsd, fullName, mintMessage, normalizeLabel } from "~~/lib/kredito";
 import { notification } from "~~/utils/scaffold-eth";
 
 // Best-effort seed for the subname label from a typed ENS name (strip the TLD); "" on any failure
@@ -103,7 +103,7 @@ export const CertificateSection = ({
         body: JSON.stringify({ wallet: borrower, label: normalized, signature }),
       });
       const json = await res.json();
-      if (!res.ok) throw new Error(json?.error || json?.message || "Mint failed");
+      if (!res.ok) throw new Error(json?.message || json?.error || "Mint failed");
       setMinted({ label: normalized, txHash: json.txHash });
       onMinted(normalized);
       notification.success(`Minted ${fullName(normalized)}`);
@@ -114,30 +114,22 @@ export const CertificateSection = ({
     }
   };
 
-  // Option B: the issuer SIGNS an EIP-712 attestation; the vault verifies it onchain.
+  // Option B: the issuer SIGNS an EIP-712 attestation; the vault verifies it onchain. The score,
+  // risk tier, credit limit and evidence digest are derived SERVER-SIDE from the stored credit check
+  // (never sent from here) — the client only proves wallet control by signing `attestMessage`.
   const signAttestation = async () => {
-    // No user-entered loan amount — the credit limit (maxPrincipal) is derived from the score.
-    const limitUsd = creditLimitUsd(result.combinedScore);
-    if (limitUsd <= 0) {
+    // Pre-check for a friendlier message; the server is authoritative and re-checks.
+    if (creditLimitUsd(result.combinedScore) <= 0) {
       notification.error("Your credit score is below the eligible threshold for a credit line.");
       return;
     }
     setSigning(true);
     try {
+      const control = await signMessage(attestMessage(borrower));
       const res = await fetch("/api/lendsignal/attest", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          borrower,
-          score: result.combinedScore,
-          riskTier: result.riskTier,
-          evidenceDigest: result.scoreInputs.evidenceDigest,
-          expiresAt: result.scoreInputs.expiresAt,
-          // H-2: issuer-bound loan cap = the borrower's requested loan amount. The demo asset is
-          // 6-decimal mUSDC where 1 unit == $1, so USD maps directly to base units. The vault
-          // enforces borrow amount <= this.
-          maxPrincipal: (BigInt(limitUsd) * 1_000_000n).toString(),
-        }),
+        body: JSON.stringify({ borrower, signature: control }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.message || json?.error || "Signing failed");

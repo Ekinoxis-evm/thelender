@@ -22,10 +22,20 @@ export async function GET(req: NextRequest) {
   const borrower = searchParams.get("borrower");
   const limit = Math.min(Number(searchParams.get("limit") ?? 10) || 10, 50);
 
+  // Always scope to a single wallet — never return the whole table. (`borrower` is matched
+  // case-insensitively, consistent with getDecision / the evaluation route.)
+  if (!borrower || !/^0x[0-9a-fA-F]{40}$/.test(borrower)) {
+    return NextResponse.json({ checks: [], configured: true, error: "borrower required" }, { status: 400 });
+  }
+
   try {
     const supabase = createAdminClient();
-    let query = supabase.from("credit_checks").select(COLUMNS).order("created_at", { ascending: false }).limit(limit);
-    if (borrower) query = query.eq("borrower", borrower);
+    const query = supabase
+      .from("credit_checks")
+      .select(COLUMNS)
+      .ilike("borrower", borrower)
+      .order("created_at", { ascending: false })
+      .limit(limit);
 
     const { data, error } = await query;
     if (error) return NextResponse.json({ checks: [], configured: true, error: error.message });

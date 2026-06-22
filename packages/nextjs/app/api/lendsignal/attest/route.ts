@@ -1,37 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Hex, hashTypedData } from "viem";
+import { type Hex, createPublicClient, hashTypedData, http, isAddress } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
+import { sepolia } from "viem/chains";
 import { type CreditAttestation, MAX_ATTESTATION_TTL_SECONDS, riskTierToUint, typedData } from "~~/kredito/attestation";
 import { KREDITO_VAULT_ADDRESS } from "~~/kredito/vault";
-import type { RiskTier } from "~~/services/lendsignal/types";
+import { attestMessage, creditLimitUsd } from "~~/lib/kredito";
+import { getAttestationInputs } from "~~/services/kredito/identities";
+import { MIN_ELIGIBLE_SCORE, tierFromScore } from "~~/services/lendsignal/score";
 
 /**
- * POST /api/lendsignal/attest
+ * POST /api/lendsignal/attest  { borrower, signature }
  *
- * Option B: the PROTOCOL (issuer) signs an EIP-712 CreditAttestation over the score.
- * The signature is the trust anchor — a vault verifies it onchain (recovers the
- * signer == issuer) to gate lending. The borrower cannot forge it. No certificate
- * registry needed; ENS carries the identity.
- *
- * Signed server-side with ISSUER_PRIVATE_KEY (never reaches the client).
+ * The PROTOCOL (issuer) signs an EIP-712 CreditAttestation; a vault verifies it onchain to gate
+ * lending. SERVER-AUTHORITATIVE: the caller proves control of `borrower` (signs `attestMessage`),
+ * then the signed score / risk tier / maxPrincipal / evidence digest are derived from that wallet's
+ * latest stored `credit_check` — NEVER from the request body. This prevents a caller from forging a
+ * credit line for a score they didn't earn. Signed with ISSUER_PRIVATE_KEY (never reaches the client).
  */
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 const ISSUER_PK = process.env.ISSUER_PRIVATE_KEY ?? "";
 
-type Body = {
-  borrower: `0x${string}`;
-  score: number;
-  riskTier: RiskTier;
-  evidenceDigest: `0x${string}`;
-  expiresAt: number;
-  /** H-2: issuer-bound max loan size (asset units as a base-10 string, e.g. USDC 6-decimals). */
-  maxPrincipal: string;
-};
-
-const isAddress = (v: unknown): v is `0x${string}` => typeof v === "string" && /^0x[0-9a-fA-F]{40}$/.test(v);
-const isBytes32 = (v: unknown): v is `0x${string}` => typeof v === "string" && /^0x[0-9a-fA-F]{64}$/.test(v);
+function sepoliaRpc() {
+  const key = process.env.ALCHEMY_API_KEY ?? process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
+  return key ? `https://eth-sepolia.g.alchemy.com/v2/${key}` : "https://ethereum-sepolia-rpc.publicnode.com";
+}
 
 export async function POST(req: NextRequest) {
   if (!ISSUER_PK) {
@@ -40,26 +34,6 @@ export async function POST(req: NextRequest) {
       { status: 501 },
     );
   }
-
-  let body: Body;
-  try {
-    body = (await req.json()) as Body;
-  } catch {
-    return NextResponse.json({ error: "invalid_request", message: "Body must be JSON." }, { status: 400 });
-  }
-
-  if (
-    !isAddress(body.borrower) ||
-    typeof body.score !== "number" ||
-    !isBytes32(body.evidenceDigest) ||
-    typeof body.maxPrincipal !== "string"
-  ) {
-    return NextResponse.json(
-      { error: "invalid_request", message: "borrower/score/evidenceDigest/maxPrincipal required." },
-      { status: 400 },
-    );
-  }
-
   // C-1: the signature is bound to a specific vault (domain.verifyingContract). The issuer must know it.
   if (!isAddress(KREDITO_VAULT_ADDRESS)) {
     return NextResponse.json(
@@ -67,29 +41,73 @@ export async function POST(req: NextRequest) {
       { status: 501 },
     );
   }
+  const vault = KREDITO_VAULT_ADDRESS as `0x${string}`;
 
-  let maxPrincipal: bigint;
+  let body: { borrower?: string; signature?: Hex };
   try {
-    maxPrincipal = BigInt(body.maxPrincipal);
-    if (maxPrincipal <= 0n) throw new Error("maxPrincipal must be positive");
+    body = (await req.json()) as { borrower?: string; signature?: Hex };
   } catch {
+    return NextResponse.json({ error: "invalid_request", message: "Body must be JSON." }, { status: 400 });
+  }
+  const { borrower, signature } = body;
+  if (!borrower || !isAddress(borrower)) {
+    return NextResponse.json({ error: "invalid_request", message: "Valid borrower required." }, { status: 400 });
+  }
+
+  // AuthZ: prove control of `borrower` (EOA + Privy smart wallets via ERC-1271/6492). Without this,
+  // anyone could request — and the issuer would sign — an attestation bound to any address.
+  const reader = createPublicClient({ chain: sepolia, transport: http(sepoliaRpc()) });
+  let proven = false;
+  if (signature) {
+    try {
+      proven = await reader.verifyMessage({ address: borrower, message: attestMessage(borrower), signature });
+    } catch {
+      proven = false;
+    }
+  }
+  if (!proven) {
     return NextResponse.json(
-      { error: "invalid_request", message: "maxPrincipal must be a positive base-10 integer string." },
-      { status: 400 },
+      { error: "unauthorized", message: "Signature does not prove control of the wallet." },
+      { status: 401 },
     );
   }
 
-  // H-1: the vault rejects windows longer than MAX_ATTESTATION_TTL. The issuer is authoritative over
-  // the window — derive it here (issuedAt = now, expiresAt = now + max TTL) rather than trusting the
-  // client's expiresAt (the score uses a longer display validity). This is always within the cap.
+  // Server-authoritative inputs: read the wallet's latest credit check. The score never came from
+  // the client, so it can't be inflated. Eligibility is recomputed against MIN_ELIGIBLE_SCORE.
+  const inputs = await getAttestationInputs(borrower);
+  if (!inputs) {
+    return NextResponse.json(
+      { error: "no_credit_check", message: "No completed credit check found for this wallet." },
+      { status: 404 },
+    );
+  }
+  const score = Math.max(0, Math.min(1000, Math.round(inputs.score)));
+  if (score < MIN_ELIGIBLE_SCORE) {
+    return NextResponse.json(
+      { error: "not_eligible", message: `Score ${score} is below the eligible threshold (${MIN_ELIGIBLE_SCORE}).` },
+      { status: 403 },
+    );
+  }
+  const limitUsd = creditLimitUsd(score);
+  if (limitUsd <= 0) {
+    return NextResponse.json(
+      { error: "not_eligible", message: "Score does not qualify for a credit line." },
+      { status: 403 },
+    );
+  }
+  // 6-decimal USDC where $1 == 1e6 units. Limit + tier + evidence are all derived server-side.
+  const maxPrincipal = BigInt(limitUsd) * 1_000_000n;
+
+  // H-1: issuer is authoritative over the validity window — issuedAt = now, expiresAt = now + max TTL
+  // (always within the vault's cap), independent of the score's longer display validity.
   const issuedAt = Math.floor(Date.now() / 1000);
   const expiresAt = issuedAt + MAX_ATTESTATION_TTL_SECONDS;
 
   const attestation: CreditAttestation = {
-    borrower: body.borrower,
-    score: Math.max(0, Math.min(1000, Math.round(body.score))),
-    riskTier: riskTierToUint(body.riskTier),
-    evidenceDigest: body.evidenceDigest,
+    borrower: borrower as `0x${string}`,
+    score,
+    riskTier: riskTierToUint(tierFromScore(score)),
+    evidenceDigest: inputs.evidenceDigest,
     issuedAt,
     expiresAt,
     maxPrincipal,
@@ -97,15 +115,14 @@ export async function POST(req: NextRequest) {
 
   try {
     const account = privateKeyToAccount((ISSUER_PK.startsWith("0x") ? ISSUER_PK : `0x${ISSUER_PK}`) as Hex);
-    const data = typedData(attestation, KREDITO_VAULT_ADDRESS);
-    const signature = await account.signTypedData(data);
+    const data = typedData(attestation, vault);
+    const sig = await account.signTypedData(data);
     const digest = hashTypedData(data);
 
-    // JSON has no bigint: serialize maxPrincipal as a base-10 string. The client coerces it back to
-    // bigint before encoding the borrow tuple / signing payload.
+    // JSON has no bigint: serialize maxPrincipal as a base-10 string. The client coerces it back.
     return NextResponse.json({
       attestation: { ...attestation, maxPrincipal: attestation.maxPrincipal.toString() },
-      signature,
+      signature: sig,
       issuer: account.address,
       digest,
     });

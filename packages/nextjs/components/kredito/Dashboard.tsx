@@ -20,6 +20,7 @@ import type { StoredScore } from "~~/kredito/scoreStore";
 import { useKreditoWallet } from "~~/kredito/useWallet";
 import type { SignedAttestation } from "~~/kredito/vault";
 import type { EnsIdentity } from "~~/lib/kredito";
+import { MIN_ELIGIBLE_SCORE } from "~~/services/lendsignal/score";
 import type { RiskTier } from "~~/services/lendsignal/types";
 import { notification } from "~~/utils/scaffold-eth";
 
@@ -120,7 +121,7 @@ export const Dashboard = ({ identity }: { identity: EnsIdentity }) => {
         combinedScore: c.combined_score ?? 0,
         riskTier: toRiskTier(c.risk_tier),
         eligible: !!c.eligible,
-        minEligibleScore: 400,
+        minEligibleScore: MIN_ELIGIBLE_SCORE,
         scoreInputs: {
           confidentialAiScore: c.combined_score ?? 0,
           attestationHash: c.attestation_hash as `0x${string}`,
