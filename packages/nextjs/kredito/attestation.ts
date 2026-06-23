@@ -63,8 +63,6 @@ export type CreditAttestation = {
 export const riskTierToUint = (tier: RiskTier): number =>
   tier === "low_default_risk" ? 2 : tier === "medium_default_risk" ? 1 : 0;
 
-export const riskUintLabel = (n: number): string => (n === 2 ? "Low" : n === 1 ? "Medium" : "High");
-
 /** Convert the JS attestation into the bigint-typed message viem expects for signTypedData. */
 export const toTypedMessage = (att: CreditAttestation) => ({
   borrower: att.borrower,

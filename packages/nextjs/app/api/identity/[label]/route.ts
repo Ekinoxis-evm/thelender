@@ -1,6 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { type Hex, createPublicClient, http, isAddress } from "viem";
-import { sepolia } from "viem/chains";
+import { type Hex, isAddress } from "viem";
 import {
   EDIT_TTL_MS,
   type ProfileInput,
@@ -10,13 +9,9 @@ import {
   sanitizeProfile,
 } from "~~/lib/kredito";
 import { getIdentityByLabel, updateProfile } from "~~/services/kredito/identities";
+import { verifyWalletControl } from "~~/services/kredito/verifyWallet";
 
 export const runtime = "nodejs";
-
-function sepoliaRpc() {
-  const key = process.env.ALCHEMY_API_KEY ?? process.env.NEXT_PUBLIC_ALCHEMY_API_KEY;
-  return key ? `https://eth-sepolia.g.alchemy.com/v2/${key}` : "https://ethereum-sepolia-rpc.publicnode.com";
-}
 
 /**
  * GET /api/identity/<label> — public, stable read for the profile card. Returns the non-sensitive
@@ -78,17 +73,11 @@ export async function PATCH(req: NextRequest, { params }: { params: Promise<{ la
 
   // Verify the signature commits to THIS exact profile content + timestamp (content-bound + TTL'd → replay-proof).
   const clean = sanitizeProfile(profile);
-  const reader = createPublicClient({ chain: sepolia, transport: http(sepoliaRpc()) });
-  let proven = false;
-  try {
-    proven = await reader.verifyMessage({
-      address: wallet,
-      message: editMessage(wallet, label, profileDigest(clean), issuedAt),
-      signature,
-    });
-  } catch {
-    proven = false;
-  }
+  const proven = await verifyWalletControl(
+    wallet as `0x${string}`,
+    editMessage(wallet, label, profileDigest(clean), issuedAt),
+    signature,
+  );
   if (!proven) {
     return NextResponse.json({ error: "Signature does not prove control of the wallet" }, { status: 401 });
   }

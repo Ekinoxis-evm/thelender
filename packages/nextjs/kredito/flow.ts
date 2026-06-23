@@ -52,5 +52,3 @@ export const FLOW: FlowStep[] = [
     summary: "Liquidity providers fund the vault; origination fees build a reserve that covers defaults.",
   },
 ];
-
-export const flowByKey = (key: string) => FLOW.find(s => s.key === key);
